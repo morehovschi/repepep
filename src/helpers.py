@@ -253,9 +253,6 @@ def plot_waveform_with_onsets(
         cmap="magma",
     )
 
-    # for onset in rel_onsets:
-    #     ax_spec.axvline(onset, color="white", linestyle="--", alpha=0.7)
-
     ax_spec.set_ylabel("Frequency (Hz)")
     ax_spec.set_xlabel("Time (s)")
 
