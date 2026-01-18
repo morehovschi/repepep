@@ -5,3 +5,4 @@ garbage
 .DS_Store
 .ipynb_checkpoints
 data/audio
+*__pycache__
