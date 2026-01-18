@@ -2,6 +2,10 @@ import os
 import glob
 import freesound
 import pandas as pd
+import essentia
+import essentia.standard as es
+import matplotlib.pyplot as plt
+import numpy as np
 
 def query_freesound(query, filter, client, fs_store_metadata_fields, num_results=10):
     """Queries freesound with the given query and filter values.
@@ -177,3 +181,50 @@ def ensure_datasets_audio(meta_dir,client,verbose=True):
     if verbose:
         print(f"\nDone. Re-downloaded {total_missing} missing files.")
 
+def detect_onsets(audio_path, sample_rate=44100):
+    audio = es.MonoLoader(
+        filename=audio_path,
+        sampleRate=sample_rate
+    )()
+    
+    # The OnsetDetection algorithm provides various ODFs.
+    od_complex = es.OnsetDetection(method='complex')
+    
+    # We need the auxilary algorithms to compute magnitude and phase.
+    w = es.Windowing(type='hann')
+    fft = es.FFT() # Outputs a complex FFT vector.
+    c2p = es.CartesianToPolar() # Converts it into a pair of magnitude and phase vectors.
+    
+    # Compute both ODF frame by frame. Store results to a Pool.
+    pool = essentia.Pool()
+    for frame in es.FrameGenerator(audio, frameSize=1024, hopSize=512):
+        magnitude, phase = c2p(fft(w(frame)))
+        pool.add('odf.complex', od_complex(magnitude, phase))
+    
+    # 2. Detect onset locations.
+    onsets = es.Onsets()
+    onset_times = onsets(essentia.array([pool['odf.complex']]), [1])
+
+    return audio, onset_times
+
+def plot_waveform_with_onsets(audio, onset_times, sample_rate=44100, start_time=None, end_time=None):
+    # Convert times to sample indices
+    start_sample = int(start_time * sample_rate) if start_time is not None else 0
+    end_sample = int(end_time * sample_rate) if end_time is not None else len(audio)
+
+    audio_seg = audio[start_sample:end_sample]
+    time_axis = np.arange(len(audio_seg)) / sample_rate
+
+    plt.figure(figsize=(14, 6))
+    plt.plot(time_axis, audio_seg, linewidth=0.8)
+
+    for onset in onset_times:
+        if start_time is None or onset >= start_time:
+            if end_time is None or onset <= end_time:
+                plt.axvline(onset - (start_time or 0), color='red', linestyle='--', alpha=0.7)
+
+    plt.xlabel("Time (s)")
+    plt.ylabel("Amplitude")
+    plt.title("Waveform with detected onsets")
+    plt.tight_layout()
+    plt.show()
