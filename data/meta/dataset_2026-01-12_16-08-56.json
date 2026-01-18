@@ -1,0 +1,16 @@
+{
+  "timestamp": "2026-01-12_16-08-56",
+  "num_sounds": 40,
+  "queries": [
+    {
+      "query": "dog bark",
+      "filter": null,
+      "num_results": 20
+    },
+    {
+      "query": "repeated hits",
+      "filter": null,
+      "num_results": 20
+    }
+  ]
+}
