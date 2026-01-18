@@ -207,7 +207,13 @@ def detect_onsets(audio_path, sample_rate=44100):
 
     return audio, onset_times
 
-def plot_waveform_with_onsets(audio, onset_times, sample_rate=44100, start_time=None, end_time=None):
+def plot_waveform_with_onsets(
+    audio,
+    onset_times,
+    sample_rate=44100,
+    start_time=None,
+    end_time=None,
+):
     # Convert times to sample indices
     start_sample = int(start_time * sample_rate) if start_time is not None else 0
     end_sample = int(end_time * sample_rate) if end_time is not None else len(audio)
@@ -215,16 +221,44 @@ def plot_waveform_with_onsets(audio, onset_times, sample_rate=44100, start_time=
     audio_seg = audio[start_sample:end_sample]
     time_axis = np.arange(len(audio_seg)) / sample_rate
 
-    plt.figure(figsize=(14, 6))
-    plt.plot(time_axis, audio_seg, linewidth=0.8)
-
+    # Convert onset times to relative times within the segment
+    rel_onsets = []
     for onset in onset_times:
-        if start_time is None or onset >= start_time:
-            if end_time is None or onset <= end_time:
-                plt.axvline(onset - (start_time or 0), color='red', linestyle='--', alpha=0.7)
+        if (start_time is None or onset >= start_time) and \
+           (end_time is None or onset <= end_time):
+            rel_onsets.append(onset - (start_time or 0))
 
-    plt.xlabel("Time (s)")
-    plt.ylabel("Amplitude")
-    plt.title("Waveform with detected onsets")
+    fig, (ax_wave, ax_spec) = plt.subplots(
+        2, 1,
+        figsize=(14, 8),
+        sharex=True,
+        gridspec_kw={"height_ratios": [2, 1]}  # waveform taller than spectrogram
+    )
+
+    # ---- Waveform ----
+    ax_wave.plot(time_axis, audio_seg, linewidth=0.8)
+    for onset in rel_onsets:
+        ax_wave.axvline(onset, color="red", linestyle="--", alpha=0.7)
+
+    ax_wave.set_ylabel("Amplitude")
+    ax_wave.set_title("Waveform and Spectrogram with Detected Onsets")
+
+    # ---- Spectrogram ----
+    Pxx, freqs, bins, im = ax_spec.specgram(
+        audio_seg,
+        NFFT=1024,
+        Fs=sample_rate,
+        noverlap=512,
+        scale="dB",
+        cmap="magma",
+    )
+
+    # for onset in rel_onsets:
+    #     ax_spec.axvline(onset, color="white", linestyle="--", alpha=0.7)
+
+    ax_spec.set_ylabel("Frequency (Hz)")
+    ax_spec.set_xlabel("Time (s)")
+
     plt.tight_layout()
     plt.show()
+
