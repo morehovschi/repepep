@@ -6,3 +6,4 @@ garbage
 .ipynb_checkpoints
 data/audio
 *__pycache__
+readings
