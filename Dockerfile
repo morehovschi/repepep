@@ -1,9 +1,7 @@
 FROM ubuntu:22.04
 
-# Avoid interactive installs
 ENV DEBIAN_FRONTEND=noninteractive
 
-# System dependencies
 RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
@@ -16,24 +14,17 @@ RUN apt-get update && apt-get install -y \
     libyaml-dev \
     libsamplerate0-dev \
     libtag1-dev \
+    vim \
     && rm -rf /var/lib/apt/lists/*
 
-# Upgrade pip
 RUN pip3 install --upgrade pip
 
-RUN pip3 install jupyter notebook
-
-RUN pip3 install essentia
+RUN pip3 install jupyter notebook pandas matplotlib essentia
 
 RUN pip3 install git+https://github.com/MTG/freesound-python.git
 
-# Create work directory
 WORKDIR /workspace
 
-# Expose Jupyter port
 EXPOSE 8888
 
-# Default command
 CMD ["jupyter", "notebook", "--ip=0.0.0.0", "--port=8888", "--no-browser", "--allow-root"]
-
-
