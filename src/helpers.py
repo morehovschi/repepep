@@ -181,14 +181,14 @@ def ensure_datasets_audio(meta_dir,client,verbose=True):
     if verbose:
         print(f"\nDone. Re-downloaded {total_missing} missing files.")
 
-def detect_onsets(audio_path, sample_rate=44100):
+def detect_onsets(audio_path, sample_rate=44100, method="hfc"):
     audio = es.MonoLoader(
         filename=audio_path,
         sampleRate=sample_rate
     )()
     
     # The OnsetDetection algorithm provides various ODFs.
-    od_complex = es.OnsetDetection(method='complex')
+    od_method = es.OnsetDetection(method=method)
     
     # We need the auxilary algorithms to compute magnitude and phase.
     w = es.Windowing(type='hann')
@@ -199,11 +199,11 @@ def detect_onsets(audio_path, sample_rate=44100):
     pool = essentia.Pool()
     for frame in es.FrameGenerator(audio, frameSize=1024, hopSize=512):
         magnitude, phase = c2p(fft(w(frame)))
-        pool.add('odf.complex', od_complex(magnitude, phase))
+        pool.add('odf.method', od_method(magnitude, phase))
     
     # 2. Detect onset locations.
     onsets = es.Onsets()
-    onset_times = onsets(essentia.array([pool['odf.complex']]), [1])
+    onset_times = onsets(essentia.array([pool['odf.method']]), [1])
 
     return audio, onset_times
 
