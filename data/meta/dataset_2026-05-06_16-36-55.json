@@ -1,0 +1,11 @@
+{
+  "timestamp": "2026-05-06_16-36-55",
+  "num_sounds": 20,
+  "queries": [
+    {
+      "query": "electric fan",
+      "filter": null,
+      "num_results": 20
+    }
+  ]
+}
