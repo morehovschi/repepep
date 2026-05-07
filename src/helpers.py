@@ -44,7 +44,7 @@ def retrieve_sound_preview(client, sound, directory):
     )
 
 
-def sounds_to_dataframe(sounds, audio_dir):
+def sounds_to_dataframe(sounds, save_dir):
     rows = []
 
     for sound in sounds:
@@ -57,7 +57,7 @@ def sounds_to_dataframe(sounds, audio_dir):
             "license": sound.license,
             "tags": ",".join(sound.tags),
             "preview_url": sound.previews.preview_hq_ogg,
-            "local_path": os.path.join(audio_dir, filename)
+            "local_path": os.path.join(save_dir, filename)
         })
 
     return pd.DataFrame(rows)
@@ -135,9 +135,21 @@ def delete_dataset_with_gc(meta_csv_path, meta_dir, audio_dir, dry_run=True):
             else:
                 kept += 1
 
+    # 4. Clean up empty subdirectories left behind
+    for root, dirs, _ in os.walk(audio_dir, topdown=False):
+        for dir_name in dirs:
+            dir_path = os.path.join(root, dir_name)
+            if not os.listdir(dir_path):
+                if dry_run:
+                    print(f"[DRY RUN] Would delete empty directory: {dir_path}")
+                else:
+                    os.rmdir(dir_path)
+                    print(f"Deleted empty directory: {dir_path}")
+
     print(f"\nGC summary:")
     print(f"  Kept audio files: {kept}")
     print(f"  Deleted audio files: {deleted}")
+
 
 def ensure_datasets_audio(meta_dir,client,verbose=True):
     """
@@ -258,4 +270,3 @@ def plot_waveform_with_onsets(
 
     plt.tight_layout()
     plt.show()
-
