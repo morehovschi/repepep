@@ -6,6 +6,10 @@ import essentia
 import essentia.standard as es
 import matplotlib.pyplot as plt
 import numpy as np
+import sklearn
+
+from sklearn.cluster import DBSCAN
+from sklearn.metrics import pairwise_distances
 
 def query_freesound(query, filter, client, fs_store_metadata_fields, num_results=10):
     """Queries freesound with the given query and filter values.
@@ -86,7 +90,7 @@ def delete_dataset_with_gc(meta_csv_path, meta_dir, audio_dir, dry_run=True):
     # 1. Delete metadata file
     if os.path.exists(meta_csv_path):
         json_path = meta_csv_path[:meta_csv_path.rfind(".")] + ".json"
-        
+
         if dry_run:
             print(f"[DRY RUN] Would delete metadata: {meta_csv_path}")
             if os.path.exists(json_path):
@@ -109,7 +113,7 @@ def delete_dataset_with_gc(meta_csv_path, meta_dir, audio_dir, dry_run=True):
         # ensure we skip reading it
         if dry_run and meta_path == meta_csv_path:
             continue
-        
+
         df = pd.read_csv(meta_path)
         for path in df["local_path"]:
             referenced_audio.add(os.path.abspath(path))
@@ -120,7 +124,7 @@ def delete_dataset_with_gc(meta_csv_path, meta_dir, audio_dir, dry_run=True):
 
     if dry_run:
         print()
-        
+
     for root, _, files in os.walk(audio_dir):
         for fname in files:
             audio_path = os.path.abspath(os.path.join(root, fname))
@@ -198,21 +202,21 @@ def detect_onsets(audio_path, sample_rate=44100, method="hfc"):
         filename=audio_path,
         sampleRate=sample_rate
     )()
-    
+
     # The OnsetDetection algorithm provides various ODFs.
     od_method = es.OnsetDetection(method=method)
-    
+
     # We need the auxilary algorithms to compute magnitude and phase.
     w = es.Windowing(type='hann')
     fft = es.FFT() # Outputs a complex FFT vector.
     c2p = es.CartesianToPolar() # Converts it into a pair of magnitude and phase vectors.
-    
+
     # Compute both ODF frame by frame. Store results to a Pool.
     pool = essentia.Pool()
     for frame in es.FrameGenerator(audio, frameSize=1024, hopSize=512):
         magnitude, phase = c2p(fft(w(frame)))
         pool.add('odf.method', od_method(magnitude, phase))
-    
+
     # 2. Detect onset locations.
     onsets = es.Onsets()
     onset_times = onsets(essentia.array([pool['odf.method']]), [1])
@@ -270,3 +274,209 @@ def plot_waveform_with_onsets(
 
     plt.tight_layout()
     plt.show()
+
+def analyze_repetitiveness(audio_path, sr=44100, window_ms=150, lat_threshold=0.08, eps=0.15):
+    """
+    Analyzes an audio file for repetitive percussive events.
+
+    1. Detects onsets.
+    2. Calculates LogAttackTime and MFCCs for the 150ms window after each onset.
+    3. Filters out sounds with slow attacks (non-percussive).
+    4. Clusters the remaining MFCC signatures to find repetitions.
+    """
+    print(f"--- Analyzing: {audio_path.split('/')[-1]} ---")
+
+    # 1. load audio and detect onsets
+    audio = es.MonoLoader(filename=audio_path, sampleRate=sr)()
+    od_method = es.OnsetDetection(method='hfc')
+    w = es.Windowing(type='hann')
+    fft = es.FFT()
+    c2p = es.CartesianToPolar()
+
+    pool = essentia.Pool()
+    for frame in es.FrameGenerator(audio, frameSize=1024, hopSize=512):
+        mag, phase = c2p(fft(w(frame)))
+        pool.add('odf.method', od_method(mag, phase))
+
+    onsets = es.Onsets()(essentia.array([pool['odf.method']]), [1])
+    print(f"Total raw onsets detected: {len(onsets)}")
+
+    if len(onsets) == 0:
+        return None
+
+    # 2. extract Features per onset
+    window_samples = int((window_ms / 1000.0) * sr)
+
+    # Essentia extractors
+    envelope = es.Envelope()
+    log_attack = es.LogAttackTime()
+    spectrum = es.Spectrum()
+    mfcc = es.MFCC(inputSize=513)
+
+    features = []
+    last_onset_time = -1.0
+
+    min_ioi = 0.25  # adjustable param
+
+    for onset in onsets:
+        # if this onset is too close the last valid one, skip it
+        # (avoids picking up echoes of the sound events)
+        if (onset - last_onset_time) < min_ioi:
+            continue
+
+        start_idx = int(onset * sr)
+        end_idx = min(start_idx + window_samples, len(audio))
+        segment = audio[start_idx:end_idx]
+
+        # skip if too close to the end of the file
+        if len(segment) < 1024:
+            continue
+
+
+        # Peak amplitude divided by RMS (average) amplitude
+        peak_amp = np.max(np.abs(segment))
+        rms_amp = np.sqrt(np.mean(segment**2)) + 1e-9
+        crest_factor = peak_amp / rms_amp
+
+        # skip sounds that are not "peaky"
+        if crest_factor < 5.0:  # adjustable parameter
+            continue
+
+        # LogAttackTime algorithm expects the envelope of the signal
+        env = envelope(segment)
+        try:
+            # returns: (logAttackTime, attackStart, attackStop)
+            lat = log_attack(env)[0]
+        except:
+            lat = 1.0 # default high value if it fails
+
+        # sound event similarity: MFCC;
+        # - this method of measuring sound event similarity could be considered
+        #   a variable parameter; this block would need to be rewritten in a more
+        #   more modular fashion
+        segment_mfccs = []
+        for frame in es.FrameGenerator(segment, frameSize=1024, hopSize=512, startFromZero=True):
+            _, mfcc_coeffs = mfcc(spectrum(w(frame)))
+
+            # exclude the 0th coefficient (energy) so we cluster by timbre, not volume
+            segment_mfccs.append(mfcc_coeffs[1:])
+
+        mean_mfcc = np.mean(segment_mfccs, axis=0)
+
+        last_onset_time = onset
+
+        features.append({
+            'time': onset,
+            'lat': lat,
+            'crest': crest_factor,
+            'mfcc': mean_mfcc
+        })
+
+    if not features:
+        print("No onsets survived the initial pre-filtering (IOI, segment length, or Crest Factor).")
+        return None
+
+    df = pd.DataFrame(features)
+
+    # 3. filter by Log Attack Time
+    # - keep only sharp, fast attacks
+    percussive_df = df[df['lat'] < lat_threshold].copy()
+    print(f"Onsets passing LAT filter (< {lat_threshold}s): {len(percussive_df)}")
+
+    if len(percussive_df) < 2:
+        print("Not enough percussive events to cluster.\n")
+        return None
+
+    # 4. clustering (pairwise similarity)
+    # - convert list of arrays to 2D numpy array
+    X_mfcc = np.vstack(percussive_df['mfcc'].values)
+    print("Percussive onset MFCCs shape", X_mfcc.shape)
+
+    # compute cosine distance (great for spectral features)
+    dist_matrix = pairwise_distances(X_mfcc, metric='cosine')
+
+    print("Dist matrix shape:", dist_matrix.shape)
+
+    # DBSCAN: groups events that are similar. eps is the distance threshold.
+    clusterer = DBSCAN(eps=eps, min_samples=3, metric='precomputed')
+    percussive_df['cluster'] = clusterer.fit_predict(dist_matrix)
+
+    # count repetitions (excluding noise, which DBSCAN labels as -1)
+    clusters = percussive_df[percussive_df['cluster'] != -1]
+
+    if not clusters.empty:
+        largest_cluster = clusters['cluster'].value_counts().idxmax()
+        rep_count = len(clusters[clusters['cluster'] == largest_cluster])
+        print(f"--> Found repeating event! Repetitions count: {rep_count}\n")
+    else:
+        print("--> No repeating clusters found.\n")
+
+    return percussive_df
+
+def inspect_sound_with_repetition(meta_dir, sound_id, method="hfc", window_ms=150):
+    for csv_path in glob.glob(os.path.join(meta_dir, "dataset_*.csv")):
+        df = pd.read_csv(csv_path)
+        match = df[df["sound_id"] == sound_id]
+
+        if not match.empty:
+            row = match.iloc[0]
+            local_path = row["local_path"]
+
+            # 1. Get raw onsets for the background (Red lines)
+            audio, onset_times = detect_onsets(local_path, method=method)
+
+            # 2. Run your analysis function (Pass the PATH string)
+            # This returns the DataFrame with 'time' and 'cluster' columns
+            analysis_df = analyze_repetitiveness(local_path, window_ms=window_ms)
+
+            # 3. Determine which onsets are "Repetitive"
+            # We identify the largest cluster and get those timestamps
+            rep_times = []
+            if analysis_df is not None:
+                valid_clusters = analysis_df[analysis_df['cluster'] != -1]
+                if not valid_clusters.empty:
+                    largest_cluster = valid_clusters['cluster'].value_counts().idxmax()
+                    rep_times = valid_clusters[valid_clusters['cluster'] == largest_cluster]['time'].values
+
+            print(f"--- Sound ID: {sound_id} ---")
+            print(f"File: {os.path.basename(local_path)}")
+            print(f"Method: {method} | Detected: {len(onset_times)} | In Pattern: {len(rep_times)}")
+
+            # 4. Plotting
+            sample_rate = 44100
+            time_axis = np.arange(len(audio)) / sample_rate
+
+            fig, ax = plt.subplots(figsize=(14, 4))
+            ax.plot(time_axis, audio, color='gray', alpha=0.3, linewidth=0.8)
+
+            # Draw all raw onsets as thin red lines first
+            for t in onset_times:
+                ax.axvline(t, color="red", linestyle="--", linewidth=1, alpha=0.4)
+
+            # Draw repetitive onsets as thick green lines on top
+            # We use np.isclose because float timestamps might have tiny rounding differences
+            for rt in rep_times:
+                ax.axvline(rt, color="green", linestyle="-", linewidth=2.5, alpha=0.9)
+
+            title = f"\n{row['name']} (ID: {sound_id})"
+
+            ax.set_title(title)
+            ax.set_ylabel("Amplitude")
+            ax.set_xlabel("Time (s)")
+
+            print(title)
+
+            # Legend
+            from matplotlib.lines import Line2D
+            custom_lines = [Line2D([0], [0], color='red', lw=1, linestyle='--', alpha=0.4),
+                            Line2D([0], [0], color='green', lw=2.5)]
+            ax.legend(custom_lines, ['Raw Onsets', 'Detected Repetitive Pattern'])
+
+            plt.tight_layout()
+            plt.show()
+
+            from IPython.display import Audio, display
+            display(Audio(local_path))
+            return
+
+    print(f"Sound ID {sound_id} not found.")
