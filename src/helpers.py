@@ -197,29 +197,17 @@ def ensure_datasets_audio(meta_dir,client,verbose=True):
     if verbose:
         print(f"\nDone. Re-downloaded {total_missing} missing files.")
 
-def detect_onsets(audio_path, sample_rate=44100, method="hfc"):
-    audio = es.MonoLoader(
-        filename=audio_path,
-        sampleRate=sample_rate
-    )()
+def load_and_detect_onsets(audio_path, sr=44100):
+    """
+    Loads an audio file and detects its onsets using Essentia's combined OnsetRate algorithm.
+    Ensures file I/O and onset detection happen exactly once per file.
+    """
+    # Load the audio at the strict 44100Hz requirement for OnsetRate
+    audio = es.MonoLoader(filename=audio_path, sampleRate=sr)()
 
-    # The OnsetDetection algorithm provides various ODFs.
-    od_method = es.OnsetDetection(method=method)
-
-    # We need the auxilary algorithms to compute magnitude and phase.
-    w = es.Windowing(type='hann')
-    fft = es.FFT() # Outputs a complex FFT vector.
-    c2p = es.CartesianToPolar() # Converts it into a pair of magnitude and phase vectors.
-
-    # Compute both ODF frame by frame. Store results to a Pool.
-    pool = essentia.Pool()
-    for frame in es.FrameGenerator(audio, frameSize=1024, hopSize=512):
-        magnitude, phase = c2p(fft(w(frame)))
-        pool.add('odf.method', od_method(magnitude, phase))
-
-    # 2. Detect onset locations.
-    onsets = es.Onsets()
-    onset_times = onsets(essentia.array([pool['odf.method']]), [1])
+    # OnsetRate returns: (onset_times, onset_rate_per_sec)
+    # We unpack and discard the rate calculation using '_'
+    onset_times, _ = es.OnsetRate()(audio)
 
     return audio, onset_times
 
@@ -275,36 +263,17 @@ def plot_waveform_with_onsets(
     plt.tight_layout()
     plt.show()
 
-def analyze_repetitiveness(audio_path, sr=44100, window_ms=150, lat_threshold=0.08, eps=0.15):
+def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=44100, window_ms=150, lat_threshold=0.08, eps=0.15):
     """
-    Analyzes an audio file for repetitive percussive events.
-
-    1. Detects onsets.
-    2. Calculates LogAttackTime and MFCCs for the 150ms window after each onset.
-    3. Filters out sounds with slow attacks (non-percussive).
-    4. Clusters the remaining MFCC signatures to find repetitions.
+    Analyzes pre-loaded audio and pre-detected onsets for repetitive percussive events.
     """
-    print(f"--- Analyzing: {audio_path.split('/')[-1]} ---")
+    print(f"--- Analyzing: {filename} ---")
+    print(f"Total raw onsets detected: {len(onset_times)}")
 
-    # 1. load audio and detect onsets
-    audio = es.MonoLoader(filename=audio_path, sampleRate=sr)()
-    od_method = es.OnsetDetection(method='hfc')
-    w = es.Windowing(type='hann')
-    fft = es.FFT()
-    c2p = es.CartesianToPolar()
-
-    pool = essentia.Pool()
-    for frame in es.FrameGenerator(audio, frameSize=1024, hopSize=512):
-        mag, phase = c2p(fft(w(frame)))
-        pool.add('odf.method', od_method(mag, phase))
-
-    onsets = es.Onsets()(essentia.array([pool['odf.method']]), [1])
-    print(f"Total raw onsets detected: {len(onsets)}")
-
-    if len(onsets) == 0:
+    if len(onset_times) == 0:
         return None
 
-    # 2. extract Features per onset
+    # 2. Extract Features per onset
     window_samples = int((window_ms / 1000.0) * sr)
 
     # Essentia extractors
@@ -312,15 +281,14 @@ def analyze_repetitiveness(audio_path, sr=44100, window_ms=150, lat_threshold=0.
     log_attack = es.LogAttackTime()
     spectrum = es.Spectrum()
     mfcc = es.MFCC(inputSize=513)
+    w = es.Windowing(type='hann')
 
     features = []
     last_onset_time = -1.0
-
     min_ioi = 0.25  # adjustable param
 
-    for onset in onsets:
-        # if this onset is too close the last valid one, skip it
-        # (avoids picking up echoes of the sound events)
+    for onset in onset_times:
+        # Avoid picking up echoes of the sound events
         if (onset - last_onset_time) < min_ioi:
             continue
 
@@ -328,41 +296,33 @@ def analyze_repetitiveness(audio_path, sr=44100, window_ms=150, lat_threshold=0.
         end_idx = min(start_idx + window_samples, len(audio))
         segment = audio[start_idx:end_idx]
 
-        # skip if too close to the end of the file
+        # Skip if too close to the end of the file
         if len(segment) < 1024:
             continue
-
 
         # Peak amplitude divided by RMS (average) amplitude
         peak_amp = np.max(np.abs(segment))
         rms_amp = np.sqrt(np.mean(segment**2)) + 1e-9
         crest_factor = peak_amp / rms_amp
 
-        # skip sounds that are not "peaky"
-        if crest_factor < 5.0:  # adjustable parameter
+        # Skip sounds that are not "peaky"
+        if crest_factor < 5.0:
             continue
 
         # LogAttackTime algorithm expects the envelope of the signal
         env = envelope(segment)
         try:
-            # returns: (logAttackTime, attackStart, attackStop)
             lat = log_attack(env)[0]
         except:
-            lat = 1.0 # default high value if it fails
+            lat = 1.0 # Default high value if it fails
 
-        # sound event similarity: MFCC;
-        # - this method of measuring sound event similarity could be considered
-        #   a variable parameter; this block would need to be rewritten in a more
-        #   more modular fashion
         segment_mfccs = []
         for frame in es.FrameGenerator(segment, frameSize=1024, hopSize=512, startFromZero=True):
             _, mfcc_coeffs = mfcc(spectrum(w(frame)))
-
-            # exclude the 0th coefficient (energy) so we cluster by timbre, not volume
+            # Exclude 0th coefficient to cluster by timbre, not volume
             segment_mfccs.append(mfcc_coeffs[1:])
 
         mean_mfcc = np.mean(segment_mfccs, axis=0)
-
         last_onset_time = onset
 
         features.append({
@@ -378,8 +338,7 @@ def analyze_repetitiveness(audio_path, sr=44100, window_ms=150, lat_threshold=0.
 
     df = pd.DataFrame(features)
 
-    # 3. filter by Log Attack Time
-    # - keep only sharp, fast attacks
+    # 3. Filter by Log Attack Time
     percussive_df = df[df['lat'] < lat_threshold].copy()
     print(f"Onsets passing LAT filter (< {lat_threshold}s): {len(percussive_df)}")
 
@@ -387,21 +346,15 @@ def analyze_repetitiveness(audio_path, sr=44100, window_ms=150, lat_threshold=0.
         print("Not enough percussive events to cluster.\n")
         return None
 
-    # 4. clustering (pairwise similarity)
-    # - convert list of arrays to 2D numpy array
+    # 4. Clustering (pairwise similarity)
     X_mfcc = np.vstack(percussive_df['mfcc'].values)
-    print("Percussive onset MFCCs shape", X_mfcc.shape)
-
-    # compute cosine distance (great for spectral features)
     dist_matrix = pairwise_distances(X_mfcc, metric='cosine')
 
-    print("Dist matrix shape:", dist_matrix.shape)
-
-    # DBSCAN: groups events that are similar. eps is the distance threshold.
+    # DBSCAN: groups events that are similar.
     clusterer = DBSCAN(eps=eps, min_samples=3, metric='precomputed')
     percussive_df['cluster'] = clusterer.fit_predict(dist_matrix)
 
-    # count repetitions (excluding noise, which DBSCAN labels as -1)
+    # Count repetitions (excluding noise labeled as -1)
     clusters = percussive_df[percussive_df['cluster'] != -1]
 
     if not clusters.empty:
@@ -413,7 +366,7 @@ def analyze_repetitiveness(audio_path, sr=44100, window_ms=150, lat_threshold=0.
 
     return percussive_df
 
-def inspect_sound_with_repetition(meta_dir, sound_id, method="hfc", window_ms=150):
+def inspect_sound_with_repetition(meta_dir, sound_id, window_ms=150):
     for csv_path in glob.glob(os.path.join(meta_dir, "dataset_*.csv")):
         df = pd.read_csv(csv_path)
         match = df[df["sound_id"] == sound_id]
@@ -421,16 +374,20 @@ def inspect_sound_with_repetition(meta_dir, sound_id, method="hfc", window_ms=15
         if not match.empty:
             row = match.iloc[0]
             local_path = row["local_path"]
+            filename = os.path.basename(local_path)
 
-            # 1. Get raw onsets for the background (Red lines)
-            audio, onset_times = detect_onsets(local_path, method=method)
+            # 1. Load audio and run combined onset detection EXACTLY ONCE
+            audio, onset_times = load_and_detect_onsets(local_path)
 
-            # 2. Run your analysis function (Pass the PATH string)
-            # This returns the DataFrame with 'time' and 'cluster' columns
-            analysis_df = analyze_repetitiveness(local_path, window_ms=window_ms)
+            # 2. Run your analysis function using the pre-loaded data
+            analysis_df = analyze_repetitiveness(
+                audio=audio,
+                onset_times=onset_times,
+                filename=filename,
+                window_ms=window_ms
+            )
 
             # 3. Determine which onsets are "Repetitive"
-            # We identify the largest cluster and get those timestamps
             rep_times = []
             if analysis_df is not None:
                 valid_clusters = analysis_df[analysis_df['cluster'] != -1]
@@ -439,8 +396,8 @@ def inspect_sound_with_repetition(meta_dir, sound_id, method="hfc", window_ms=15
                     rep_times = valid_clusters[valid_clusters['cluster'] == largest_cluster]['time'].values
 
             print(f"--- Sound ID: {sound_id} ---")
-            print(f"File: {os.path.basename(local_path)}")
-            print(f"Method: {method} | Detected: {len(onset_times)} | In Pattern: {len(rep_times)}")
+            print(f"File: {filename}")
+            print(f"Method: Freesound Native (es.OnsetRate) | Detected: {len(onset_times)} | In Pattern: {len(rep_times)}")
 
             # 4. Plotting
             sample_rate = 44100
@@ -454,23 +411,19 @@ def inspect_sound_with_repetition(meta_dir, sound_id, method="hfc", window_ms=15
                 ax.axvline(t, color="red", linestyle="--", linewidth=1, alpha=0.4)
 
             # Draw repetitive onsets as thick green lines on top
-            # We use np.isclose because float timestamps might have tiny rounding differences
             for rt in rep_times:
                 ax.axvline(rt, color="green", linestyle="-", linewidth=2.5, alpha=0.9)
 
             title = f"\n{row['name']} (ID: {sound_id})"
-
             ax.set_title(title)
             ax.set_ylabel("Amplitude")
             ax.set_xlabel("Time (s)")
 
-            print(title)
-
-            # Legend
+            # Custom Legend
             from matplotlib.lines import Line2D
             custom_lines = [Line2D([0], [0], color='red', lw=1, linestyle='--', alpha=0.4),
                             Line2D([0], [0], color='green', lw=2.5)]
-            ax.legend(custom_lines, ['Raw Onsets', 'Detected Repetitive Pattern'])
+            ax.legend(custom_lines, ['Raw Onsets (OnsetRate)', 'Detected Repetitive Pattern'])
 
             plt.tight_layout()
             plt.show()
