@@ -7,6 +7,7 @@ import essentia.standard as es
 import matplotlib.pyplot as plt
 import numpy as np
 import sklearn
+import matplotlib.transforms as transforms
 
 from sklearn.cluster import DBSCAN
 from sklearn.metrics import pairwise_distances
@@ -219,49 +220,103 @@ def plot_waveform_with_onsets(
     sample_rate=44100,
     start_time=None,
     end_time=None,
+    max_annotations=20,
+    show_spectrogram=True
 ):
     # Convert times to sample indices
     start_sample = int(start_time * sample_rate) if start_time is not None else 0
     end_sample = int(end_time * sample_rate) if end_time is not None else len(audio)
-
+ 
     audio_seg = audio[start_sample:end_sample]
     time_axis = np.arange(len(audio_seg)) / sample_rate
-
-    # Convert onset times to relative times within the segment
+ 
     rel_onsets = []
-    for onset in onset_times:
+    for orig_idx, onset in enumerate(onset_times):
         if (start_time is None or onset >= start_time) and \
            (end_time is None or onset <= end_time):
-            rel_onsets.append(onset - (start_time or 0))
-
-    fig, (ax_wave, ax_spec) = plt.subplots(
-        2, 1,
-        figsize=(14, 8),
-        sharex=True,
-        gridspec_kw={"height_ratios": [2, 1]}  # waveform taller than spectrogram
-    )
-
-    # ---- Waveform ----
-    ax_wave.plot(time_axis, audio_seg, linewidth=0.8)
-    for onset in rel_onsets:
-        ax_wave.axvline(onset, color="red", linestyle="--", alpha=0.7)
-
+            rel_onsets.append({
+                'rel_time': onset - (start_time or 0),
+                'orig_idx': orig_idx
+            })
+ 
+    # Setup layout conditionally based on whether we need the spectrogram
+    if show_spectrogram:
+        fig, (ax_wave, ax_spec) = plt.subplots(
+            2, 1,
+            figsize=(14, 8),
+            sharex=True,
+            gridspec_kw={"height_ratios": [2, 1]}
+        )
+        offset_spec = transforms.offset_copy(ax_spec.transData, fig=fig, x=5, y=0, units='points')
+    else:
+        # Create a single, much shorter plot space to prevent scrolling fatigue
+        fig, ax_wave = plt.subplots(1, 1, figsize=(14, 3))
+ 
+    offset_wave = transforms.offset_copy(ax_wave.transData, fig=fig, x=5, y=0, units='points')
+ 
+    # ---- Waveform Subplot ----
+    ax_wave.plot(time_axis, audio_seg, linewidth=0.8, color='steelblue')
+    y_text_pos_wave = np.max(np.abs(audio_seg)) * 1.05 if len(audio_seg) > 0 else 0.9
+ 
+    should_annotate = len(rel_onsets) <= max_annotations
+ 
+    for item in rel_onsets:
+        t = item['rel_time']
+        idx = item['orig_idx']
+ 
+        ax_wave.axvline(t, color="red", linestyle="--", alpha=0.7, linewidth=1.2)
+ 
+        if should_annotate:
+            ax_wave.text(
+                x=t,
+                y=y_text_pos_wave,
+                s=str(idx),
+                color="red",
+                fontsize=9,
+                fontweight='bold',
+                horizontalalignment='left',
+                verticalalignment='bottom',
+                transform=offset_wave
+            )
+ 
     ax_wave.set_ylabel("Amplitude")
-    ax_wave.set_title("Waveform and Spectrogram with Detected Onsets")
-
-    # ---- Spectrogram ----
-    Pxx, freqs, bins, im = ax_spec.specgram(
-        audio_seg,
-        NFFT=1024,
-        Fs=sample_rate,
-        noverlap=512,
-        scale="dB",
-        cmap="magma",
-    )
-
-    ax_spec.set_ylabel("Frequency (Hz)")
-    ax_spec.set_xlabel("Time (s)")
-
+    ax_wave.set_title("Waveform with Indexed Onsets")
+    ax_wave.set_ylim(-y_text_pos_wave * 1.1, y_text_pos_wave * 1.25)
+    
+    # If the spectrogram is hidden, the waveform needs its own X-axis label
+    if not show_spectrogram:
+        ax_wave.set_xlabel("Time (s)")
+ 
+    # ---- Spectrogram Subplot (Optional) ----
+    if show_spectrogram:
+        ax_wave.set_title("Waveform and Spectrogram with Indexed Onsets")
+        Pxx, freqs, bins, im = ax_spec.specgram(
+            audio_seg, NFFT=1024, Fs=sample_rate, noverlap=512, scale="dB", cmap="magma"
+        )
+ 
+        for item in rel_onsets:
+            t = item['rel_time']
+            idx = item['orig_idx']
+ 
+            ax_spec.axvline(t, color="white", linestyle=":", alpha=0.6, linewidth=1.2)
+ 
+            if should_annotate:
+                ax_spec.text(
+                    x=t,
+                    y=sample_rate / 2 * 0.9,
+                    s=str(idx),
+                    color="white",
+                    fontsize=9,
+                    fontweight='bold',
+                    horizontalalignment='left',
+                    verticalalignment='top',
+                    transform=offset_spec
+                )
+ 
+        ax_spec.set_ylabel("Frequency (Hz)")
+        ax_spec.set_xlabel("Time (s)")
+        ax_spec.set_ylim(0, sample_rate / 2)
+ 
     plt.tight_layout()
     plt.show()
 
