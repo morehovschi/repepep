@@ -226,10 +226,10 @@ def plot_waveform_with_onsets(
     # Convert times to sample indices
     start_sample = int(start_time * sample_rate) if start_time is not None else 0
     end_sample = int(end_time * sample_rate) if end_time is not None else len(audio)
- 
+
     audio_seg = audio[start_sample:end_sample]
     time_axis = np.arange(len(audio_seg)) / sample_rate
- 
+
     rel_onsets = []
     for orig_idx, onset in enumerate(onset_times):
         if (start_time is None or onset >= start_time) and \
@@ -238,7 +238,7 @@ def plot_waveform_with_onsets(
                 'rel_time': onset - (start_time or 0),
                 'orig_idx': orig_idx
             })
- 
+
     # Setup layout conditionally based on whether we need the spectrogram
     if show_spectrogram:
         fig, (ax_wave, ax_spec) = plt.subplots(
@@ -251,21 +251,21 @@ def plot_waveform_with_onsets(
     else:
         # Create a single, much shorter plot space to prevent scrolling fatigue
         fig, ax_wave = plt.subplots(1, 1, figsize=(14, 3))
- 
+
     offset_wave = transforms.offset_copy(ax_wave.transData, fig=fig, x=5, y=0, units='points')
- 
+
     # ---- Waveform Subplot ----
     ax_wave.plot(time_axis, audio_seg, linewidth=0.8, color='steelblue')
     y_text_pos_wave = np.max(np.abs(audio_seg)) * 1.05 if len(audio_seg) > 0 else 0.9
- 
+
     should_annotate = len(rel_onsets) <= max_annotations
- 
+
     for item in rel_onsets:
         t = item['rel_time']
         idx = item['orig_idx']
- 
+
         ax_wave.axvline(t, color="red", linestyle="--", alpha=0.7, linewidth=1.2)
- 
+
         if should_annotate:
             ax_wave.text(
                 x=t,
@@ -278,28 +278,28 @@ def plot_waveform_with_onsets(
                 verticalalignment='bottom',
                 transform=offset_wave
             )
- 
+
     ax_wave.set_ylabel("Amplitude")
     ax_wave.set_title("Waveform with Indexed Onsets")
     ax_wave.set_ylim(-y_text_pos_wave * 1.1, y_text_pos_wave * 1.25)
-    
+
     # If the spectrogram is hidden, the waveform needs its own X-axis label
     if not show_spectrogram:
         ax_wave.set_xlabel("Time (s)")
- 
+
     # ---- Spectrogram Subplot (Optional) ----
     if show_spectrogram:
         ax_wave.set_title("Waveform and Spectrogram with Indexed Onsets")
         Pxx, freqs, bins, im = ax_spec.specgram(
             audio_seg, NFFT=1024, Fs=sample_rate, noverlap=512, scale="dB", cmap="magma"
         )
- 
+
         for item in rel_onsets:
             t = item['rel_time']
             idx = item['orig_idx']
- 
+
             ax_spec.axvline(t, color="white", linestyle=":", alpha=0.6, linewidth=1.2)
- 
+
             if should_annotate:
                 ax_spec.text(
                     x=t,
@@ -312,11 +312,11 @@ def plot_waveform_with_onsets(
                     verticalalignment='top',
                     transform=offset_spec
                 )
- 
+
         ax_spec.set_ylabel("Frequency (Hz)")
         ax_spec.set_xlabel("Time (s)")
         ax_spec.set_ylim(0, sample_rate / 2)
- 
+
     plt.tight_layout()
     plt.show()
 
@@ -324,6 +324,7 @@ def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=44100,
                            window_ms=200, lat_threshold=0.15, min_ioi=0.10, min_decay=0.0, eps=0.15):
     """
     Analyzes pre-loaded audio and pre-detected onsets for repetitive events.
+    Now tracks and returns the original onset indices.
     """
     print(f"--- Analyzing: {filename} ---")
     print(f"Total raw onsets detected: {len(onset_times)}")
@@ -331,10 +332,8 @@ def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=44100,
     if len(onset_times) == 0:
         return None
 
-    # 1. Setup extractors and parameters
     window_samples = int((window_ms / 1000.0) * sr)
 
-    # Essentia extractors
     envelope = es.Envelope()
     log_attack = es.LogAttackTime()
     strong_decay = es.StrongDecay()
@@ -345,9 +344,8 @@ def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=44100,
     features = []
     last_onset_time = -1.0
 
-    # 2. Extract Features per onset
-    for onset in onset_times:
-        # Avoid picking up echoes;
+    # --> Change 1: Use enumerate to capture the original index
+    for orig_idx, onset in enumerate(onset_times):
         if (onset - last_onset_time) < min_ioi:
             continue
 
@@ -355,11 +353,9 @@ def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=44100,
         end_idx = min(start_idx + window_samples, len(audio))
         segment = audio[start_idx:end_idx]
 
-        # Skip if too close to the end of the file
         if len(segment) < 1024:
             continue
 
-        # Crest Factor check (peaky-ness)
         peak_amp = np.max(np.abs(segment))
         rms_amp = np.sqrt(np.mean(segment**2)) + 1e-9
         crest_factor = peak_amp / rms_amp
@@ -367,29 +363,28 @@ def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=44100,
         if crest_factor < 5.0:
             continue
 
-        # Log Attack Time (Envelope required)
         env = envelope(segment)
         try:
             lat = log_attack(env)[0]
         except:
             lat = 1.0
 
-        # Strong Decay (Analyzes the segment for a distinct drop in energy)
         try:
             decay = strong_decay(segment)
         except:
             decay = 0.0
 
-        # MFCCs for Timbre Clustering
         segment_mfccs = []
         for frame in es.FrameGenerator(segment, frameSize=1024, hopSize=512, startFromZero=True):
             _, mfcc_coeffs = mfcc(spectrum(w(frame)))
-            segment_mfccs.append(mfcc_coeffs[1:]) # Exclude 0th coeff
+            segment_mfccs.append(mfcc_coeffs[1:])
 
         mean_mfcc = np.mean(segment_mfccs, axis=0)
         last_onset_time = onset
 
+        # --> Change 2: Save orig_idx to the dictionary
         features.append({
+            'orig_idx': orig_idx,
             'time': onset,
             'lat': lat,
             'decay': decay,
@@ -403,7 +398,6 @@ def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=44100,
 
     df = pd.DataFrame(features)
 
-    # 3. Filter by Log Attack Time and Strong Decay
     percussive_df = df[(df['lat'] < lat_threshold) & (df['decay'] > min_decay)].copy()
     print(f"Onsets passing LAT (< {lat_threshold}s) & Decay (> {min_decay}) filters: {len(percussive_df)}")
 
@@ -411,7 +405,6 @@ def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=44100,
         print("Not enough percussive/decaying events to cluster.\n")
         return None
 
-    # 4. Clustering (pairwise similarity)
     X_mfcc = np.vstack(percussive_df['mfcc'].values)
     dist_matrix = pairwise_distances(X_mfcc, metric='cosine')
 
@@ -452,15 +445,22 @@ def inspect_sound_with_repetition(meta_dir, sound_id, window_ms=200):
             )
 
             rep_times = []
+            rep_indices = []  # --> New array to hold the indices
+
             if analysis_df is not None:
                 valid_clusters = analysis_df[analysis_df['cluster'] != -1]
                 if not valid_clusters.empty:
                     largest_cluster = valid_clusters['cluster'].value_counts().idxmax()
-                    rep_times = valid_clusters[valid_clusters['cluster'] == largest_cluster]['time'].values
+
+                    # Get both times and indices for the winning cluster
+                    best_cluster = valid_clusters[valid_clusters['cluster'] == largest_cluster]
+                    rep_times = best_cluster['time'].values
+                    rep_indices = best_cluster['orig_idx'].values.tolist()
 
             print(f"--- Sound ID: {sound_id} ---")
             print(f"File: {filename}")
             print(f"Method: Freesound Native (es.OnsetRate) | Detected: {len(onset_times)} | In Pattern: {len(rep_times)}")
+            print(f"Detected Repetitive Indices: {rep_indices}")
 
             sample_rate = 44100
             time_axis = np.arange(len(audio)) / sample_rate
@@ -487,6 +487,7 @@ def inspect_sound_with_repetition(meta_dir, sound_id, window_ms=200):
             plt.show()
 
             display(Audio(local_path))
-            return
+
+            return rep_indices
 
     print(f"Sound ID {sound_id} not found.")
