@@ -422,41 +422,55 @@ def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=44100,
 
     return percussive_df
 
-def inspect_sound_with_repetition(meta_dir, sound_id, window_ms=200):
+def inspect_sound_with_repetition(meta_dir, sound_id, window_ms=200, metadata_df=None, show_plot=True):
     """
-    Wrapper function updated to match the new default window_ms of 200.
+    Wrapper function updated to accept a pre-loaded metadata DataFrame for efficiency,
+    and an option to disable plotting during batch evaluation.
     """
-    for csv_path in glob.glob(os.path.join(meta_dir, "dataset_*.csv")):
-        df = pd.read_csv(csv_path)
-        match = df[df["sound_id"] == sound_id]
+    match = None
+    
+    # 1. Efficient lookup: Use the pre-loaded DataFrame if provided
+    if metadata_df is not None:
+        match = metadata_df[metadata_df["sound_id"] == sound_id]
+    else:
+        # Fallback to the old behavior (globbing CSVs)
+        for csv_path in glob.glob(os.path.join(meta_dir, "dataset_*.csv")):
+            df = pd.read_csv(csv_path)
+            temp_match = df[df["sound_id"] == sound_id]
+            if not temp_match.empty:
+                match = temp_match
+                break
 
-        if not match.empty:
-            row = match.iloc[0]
-            local_path = row["local_path"]
-            filename = os.path.basename(local_path)
+    if match is not None and not match.empty:
+        row = match.iloc[0]
+        local_path = row["local_path"]
+        filename = os.path.basename(local_path)
 
-            audio, onset_times = load_and_detect_onsets(local_path)
+        audio, onset_times = load_and_detect_onsets(local_path)
 
-            analysis_df = analyze_repetitiveness(
-                audio=audio,
-                onset_times=onset_times,
-                filename=filename,
-                window_ms=window_ms
-            )
+        # Note: If you want to suppress the prints inside analyze_repetitiveness during batch 
+        # evaluation, you could also pass a 'verbose=show_plot' argument down to it later!
+        analysis_df = analyze_repetitiveness(
+            audio=audio, 
+            onset_times=onset_times, 
+            filename=filename, 
+            window_ms=window_ms
+        )
 
-            rep_times = []
-            rep_indices = []  # --> New array to hold the indices
+        rep_times = []
+        rep_indices = []
+        
+        if analysis_df is not None:
+            valid_clusters = analysis_df[analysis_df['cluster'] != -1]
+            if not valid_clusters.empty:
+                largest_cluster = valid_clusters['cluster'].value_counts().idxmax()
+                
+                best_cluster = valid_clusters[valid_clusters['cluster'] == largest_cluster]
+                rep_times = best_cluster['time'].values
+                rep_indices = best_cluster['orig_idx'].values.tolist()
 
-            if analysis_df is not None:
-                valid_clusters = analysis_df[analysis_df['cluster'] != -1]
-                if not valid_clusters.empty:
-                    largest_cluster = valid_clusters['cluster'].value_counts().idxmax()
-
-                    # Get both times and indices for the winning cluster
-                    best_cluster = valid_clusters[valid_clusters['cluster'] == largest_cluster]
-                    rep_times = best_cluster['time'].values
-                    rep_indices = best_cluster['orig_idx'].values.tolist()
-
+        # 2. Conditionally render the visual and audio outputs
+        if show_plot:
             print(f"--- Sound ID: {sound_id} ---")
             print(f"File: {filename}")
             print(f"Method: Freesound Native (es.OnsetRate) | Detected: {len(onset_times)} | In Pattern: {len(rep_times)}")
@@ -486,8 +500,12 @@ def inspect_sound_with_repetition(meta_dir, sound_id, window_ms=200):
             plt.tight_layout()
             plt.show()
 
+            from IPython.display import Audio, display
             display(Audio(local_path))
+            
+        return rep_indices
 
-            return rep_indices
-
-    print(f"Sound ID {sound_id} not found.")
+    if show_plot:
+        print(f"Sound ID {sound_id} not found.")
+        
+    return []
