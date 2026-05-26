@@ -440,6 +440,7 @@ def inspect_sound_with_repetition(meta_dir, sound_id, window_ms=200, metadata_df
             if not temp_match.empty:
                 match = temp_match
                 break
+    
 
     if match is not None and not match.empty:
         row = match.iloc[0]
@@ -448,8 +449,6 @@ def inspect_sound_with_repetition(meta_dir, sound_id, window_ms=200, metadata_df
 
         audio, onset_times = load_and_detect_onsets(local_path)
 
-        # Note: If you want to suppress the prints inside analyze_repetitiveness during batch 
-        # evaluation, you could also pass a 'verbose=show_plot' argument down to it later!
         analysis_df = analyze_repetitiveness(
             audio=audio, 
             onset_times=onset_times, 
