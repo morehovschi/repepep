@@ -428,7 +428,7 @@ def inspect_sound_with_repetition(meta_dir, sound_id, window_ms=200, metadata_df
     and an option to disable plotting during batch evaluation.
     """
     match = None
-    
+
     # 1. Efficient lookup: Use the pre-loaded DataFrame if provided
     if metadata_df is not None:
         match = metadata_df[metadata_df["sound_id"] == sound_id]
@@ -440,7 +440,7 @@ def inspect_sound_with_repetition(meta_dir, sound_id, window_ms=200, metadata_df
             if not temp_match.empty:
                 match = temp_match
                 break
-    
+
 
     if match is not None and not match.empty:
         row = match.iloc[0]
@@ -450,20 +450,20 @@ def inspect_sound_with_repetition(meta_dir, sound_id, window_ms=200, metadata_df
         audio, onset_times = load_and_detect_onsets(local_path)
 
         analysis_df = analyze_repetitiveness(
-            audio=audio, 
-            onset_times=onset_times, 
-            filename=filename, 
+            audio=audio,
+            onset_times=onset_times,
+            filename=filename,
             window_ms=window_ms
         )
 
         rep_times = []
         rep_indices = []
-        
+
         if analysis_df is not None:
             valid_clusters = analysis_df[analysis_df['cluster'] != -1]
             if not valid_clusters.empty:
                 largest_cluster = valid_clusters['cluster'].value_counts().idxmax()
-                
+
                 best_cluster = valid_clusters[valid_clusters['cluster'] == largest_cluster]
                 rep_times = best_cluster['time'].values
                 rep_indices = best_cluster['orig_idx'].values.tolist()
@@ -501,10 +501,82 @@ def inspect_sound_with_repetition(meta_dir, sound_id, window_ms=200, metadata_df
 
             from IPython.display import Audio, display
             display(Audio(local_path))
-            
+
         return rep_indices
 
     if show_plot:
         print(f"Sound ID {sound_id} not found.")
-        
+
     return []
+
+def evaluate_pipeline(ground_truth, meta_dir, df=None, output_csv="eval_results.csv", show_plot=True):
+    """
+    ground_truth: dict mapping sound_id -> list of true indices, e.g. {655124: [0, 1, 2]}
+    """
+    total_true = 0
+    total_pred = 0
+    total_hits = 0
+
+    # Store per-sound results here
+    results_log = []
+
+    for sound_id, true_indices in ground_truth.items():
+        # Using show_plot=False to keep the console clean during batch runs
+        pred_indices = inspect_sound_with_repetition(meta_dir, int(sound_id), metadata_df=df, show_plot=show_plot)
+
+        true_set = set(true_indices)
+        pred_set = set(pred_indices)
+
+        hits = len(true_set.intersection(pred_set))
+
+        total_true += len(true_set)
+        total_pred += len(pred_set)
+        total_hits += hits
+
+        # --- PER-SOUND METRICS ---
+        if len(true_set) == 0 and len(pred_set) == 0:
+            # Correct Rejection
+            p, r, f = 1.0, 1.0, 1.0
+        elif len(true_set) == 0 or len(pred_set) == 0:
+            # Complete failure (either hallucinated onsets, or missed all true onsets)
+            p, r, f = 0.0, 0.0, 0.0
+        else:
+            # Standard calculation
+            p = hits / len(pred_set)
+            r = hits / len(true_set)
+            f = 2 * (p * r) / (p + r) if (p + r) > 0 else 0.0
+
+        # Get query from df
+        query_used = "Unknown"
+        if df is not None:
+            match = df[df['sound_id'] == int(sound_id)]
+            if not match.empty and 'search_query' in match.columns:
+                query_used = match.iloc[0]['search_query']
+
+        # Append to log
+        results_log.append({
+            'sound_id': sound_id,
+            'query': query_used,
+            'true_onsets': ",".join(map(str, sorted(list(true_set)))),
+            'predicted_onsets': ",".join(map(str, sorted(list(pred_set)))),
+            'precision': round(p, 3),
+            'recall': round(r, 3),
+            'f1': round(f, 3)
+        })
+
+        print(f"ID {sound_id} | True: {true_set} | Pred: {pred_set} | F1: {f:.2f}\n")
+
+    # --- GLOBAL METRICS ---
+    global_precision = total_hits / total_pred if total_pred > 0 else 0
+    global_recall = total_hits / total_true if total_true > 0 else 0
+    global_f1 = 2 * (global_precision * global_recall) / (global_precision + global_recall) if (global_precision + global_recall) > 0 else 0
+
+    print("\n=== FINAL EVALUATION ===")
+    print(f"Precision: {global_precision:.2f}")
+    print(f"Recall:    {global_recall:.2f}")
+    print(f"F1 Score:  {global_f1:.2f}")
+
+    # Save the CSV
+    results_df = pd.DataFrame(results_log)
+    results_df.to_csv(output_csv, index=False)
+    print(f"\nSaved detailed per-sound evaluation to '{output_csv}'")
