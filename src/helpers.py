@@ -320,14 +320,18 @@ def plot_waveform_with_onsets(
     plt.tight_layout()
     plt.show()
 
-def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=44100,
-                           window_ms=200, lat_threshold=0.15, min_ioi=0.10, min_decay=0.0, eps=0.15):
+def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=44100, verbose=True,
+                           crest_factor_threshold=5.0, window_ms=200, lat_threshold=0.15, min_ioi=0.10, min_decay=0.0, eps=0.15):
     """
     Analyzes pre-loaded audio and pre-detected onsets for repetitive events.
     Now tracks and returns the original onset indices.
     """
-    print(f"--- Analyzing: {filename} ---")
-    print(f"Total raw onsets detected: {len(onset_times)}")
+    def print_func(string):
+        if verbose:
+            print(string)
+
+    print_func(f"--- Analyzing: {filename} ---")
+    print_func(f"Total raw onsets detected: {len(onset_times)}")
 
     if len(onset_times) == 0:
         return None
@@ -360,7 +364,7 @@ def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=44100,
         rms_amp = np.sqrt(np.mean(segment**2)) + 1e-9
         crest_factor = peak_amp / rms_amp
 
-        if crest_factor < 5.0:
+        if crest_factor < crest_factor_threshold:
             continue
 
         env = envelope(segment)
@@ -393,16 +397,16 @@ def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=44100,
         })
 
     if not features:
-        print("No onsets survived the initial pre-filtering (IOI, segment length, or Crest Factor).")
+        print_func("No onsets survived the initial pre-filtering (IOI, segment length, or Crest Factor).")
         return None
 
     df = pd.DataFrame(features)
 
     percussive_df = df[(df['lat'] < lat_threshold) & (df['decay'] > min_decay)].copy()
-    print(f"Onsets passing LAT (< {lat_threshold}s) & Decay (> {min_decay}) filters: {len(percussive_df)}")
+    print_func(f"Onsets passing LAT (< {lat_threshold}s) & Decay (> {min_decay}) filters: {len(percussive_df)}")
 
     if len(percussive_df) < 2:
-        print("Not enough percussive/decaying events to cluster.\n")
+        print_func("Not enough percussive/decaying events to cluster.\n")
         return None
 
     X_mfcc = np.vstack(percussive_df['mfcc'].values)
@@ -416,17 +420,25 @@ def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=44100,
     if not clusters.empty:
         largest_cluster = clusters['cluster'].value_counts().idxmax()
         rep_count = len(clusters[clusters['cluster'] == largest_cluster])
-        print(f"--> Found repeating event! Repetitions count: {rep_count}\n")
+        print_func(f"--> Found repeating event! Repetitions count: {rep_count}\n")
     else:
-        print("--> No repeating clusters found.\n")
+        print_func("--> No repeating clusters found.\n")
 
     return percussive_df
 
-def inspect_sound_with_repetition(meta_dir, sound_id, window_ms=200, metadata_df=None, show_plot=True):
+def inspect_sound_with_repetition(meta_dir, sound_id,  metadata_df=None,
+                                  show_plot=True, verbose=True,
+                                  crest_factor_threshold=5.0,
+                                  lat_threshold=0.15, window_ms=200,
+                                  min_decay=0.0, eps=0.15):
     """
     Wrapper function updated to accept a pre-loaded metadata DataFrame for efficiency,
     and an option to disable plotting during batch evaluation.
     """
+    def print_func(string):
+        if verbose:
+            print(string)
+
     match = None
 
     # 1. Efficient lookup: Use the pre-loaded DataFrame if provided
@@ -453,7 +465,12 @@ def inspect_sound_with_repetition(meta_dir, sound_id, window_ms=200, metadata_df
             audio=audio,
             onset_times=onset_times,
             filename=filename,
-            window_ms=window_ms
+            crest_factor_threshold=crest_factor_threshold,
+            lat_threshold=lat_threshold,
+            window_ms=window_ms,
+            min_decay=min_decay,
+            eps=eps,
+            verbose=verbose,
         )
 
         rep_times = []
@@ -470,10 +487,10 @@ def inspect_sound_with_repetition(meta_dir, sound_id, window_ms=200, metadata_df
 
         # 2. Conditionally render the visual and audio outputs
         if show_plot:
-            print(f"--- Sound ID: {sound_id} ---")
-            print(f"File: {filename}")
-            print(f"Method: Freesound Native (es.OnsetRate) | Detected: {len(onset_times)} | In Pattern: {len(rep_times)}")
-            print(f"Detected Repetitive Indices: {rep_indices}")
+            print_func(f"--- Sound ID: {sound_id} ---")
+            print_func(f"File: {filename}")
+            print_func(f"Method: Freesound Native (es.OnsetRate) | Detected: {len(onset_times)} | In Pattern: {len(rep_times)}")
+            print_func(f"Detected Repetitive Indices: {rep_indices}")
 
             sample_rate = 44100
             time_axis = np.arange(len(audio)) / sample_rate
@@ -499,20 +516,25 @@ def inspect_sound_with_repetition(meta_dir, sound_id, window_ms=200, metadata_df
             plt.tight_layout()
             plt.show()
 
-            from IPython.display import Audio, display
             display(Audio(local_path))
 
         return rep_indices
 
     if show_plot:
-        print(f"Sound ID {sound_id} not found.")
+        print_func(f"Sound ID {sound_id} not found.")
 
     return []
 
-def evaluate_pipeline(ground_truth, meta_dir, df=None, output_csv="eval_results.csv", show_plot=True):
+def evaluate_pipeline(ground_truth, meta_dir, df=None, output_csv="eval_results.csv", show_plot=True,
+                      verbose=True, crest_factor_threshold=5.0, lat_threshold=0.15, window_ms=200,
+                      min_decay=0.0, eps=0.15):
     """
     ground_truth: dict mapping sound_id -> list of true indices, e.g. {655124: [0, 1, 2]}
     """
+    def print_func(string):
+        if verbose:
+            print(string)
+
     total_true = 0
     total_pred = 0
     total_hits = 0
@@ -522,7 +544,9 @@ def evaluate_pipeline(ground_truth, meta_dir, df=None, output_csv="eval_results.
 
     for sound_id, true_indices in ground_truth.items():
         # Using show_plot=False to keep the console clean during batch runs
-        pred_indices = inspect_sound_with_repetition(meta_dir, int(sound_id), metadata_df=df, show_plot=show_plot)
+        pred_indices = inspect_sound_with_repetition(meta_dir, int(sound_id), metadata_df=df, show_plot=show_plot,
+                                                     crest_factor_threshold=crest_factor_threshold, lat_threshold=lat_threshold,
+                                                     window_ms=window_ms, min_decay=min_decay, eps=eps, verbose=verbose)
 
         true_set = set(true_indices)
         pred_set = set(pred_indices)
@@ -563,20 +587,20 @@ def evaluate_pipeline(ground_truth, meta_dir, df=None, output_csv="eval_results.
             'recall': round(r, 3),
             'f1': round(f, 3)
         })
-
-        print(f"ID {sound_id} | True: {true_set} | Pred: {pred_set} | F1: {f:.2f}\n")
+ 
+        print_func(f"ID {sound_id} | True: {true_set} | Pred: {pred_set} | F1: {f:.2f}\n")
 
     # --- GLOBAL METRICS ---
     global_precision = total_hits / total_pred if total_pred > 0 else 0
     global_recall = total_hits / total_true if total_true > 0 else 0
     global_f1 = 2 * (global_precision * global_recall) / (global_precision + global_recall) if (global_precision + global_recall) > 0 else 0
 
-    print("\n=== FINAL EVALUATION ===")
-    print(f"Precision: {global_precision:.2f}")
-    print(f"Recall:    {global_recall:.2f}")
-    print(f"F1 Score:  {global_f1:.2f}")
+    print_func("\n=== FINAL EVALUATION ===")
+    print_func(f"Precision: {global_precision:.2f}")
+    print_func(f"Recall:    {global_recall:.2f}")
+    print_func(f"F1 Score:  {global_f1:.2f}")
 
     # Save the CSV
     results_df = pd.DataFrame(results_log)
     results_df.to_csv(output_csv, index=False)
-    print(f"\nSaved detailed per-sound evaluation to '{output_csv}'")
+    print_func(f"\nSaved detailed per-sound evaluation to '{output_csv}'")
