@@ -8,3 +8,4 @@ data/audio
 *__pycache__
 readings
 backup/
+data/grid_search*/*_details.csv
