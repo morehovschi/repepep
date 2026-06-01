@@ -200,19 +200,38 @@ def ensure_datasets_audio(meta_dir,client,verbose=True):
     if verbose:
         print(f"\nDone. Re-downloaded {total_missing} missing files.")
 
-def load_and_detect_onsets(audio_path, sr=44100):
+def load_and_detect_onsets(audio_path, sr=44100, min_ioi=0.083):
     """
-    Loads an audio file and detects its onsets using Essentia's combined OnsetRate algorithm.
-    Ensures file I/O and onset detection happen exactly once per file.
+    Loads an audio file and detects its onsets using Essentia's OnsetRate algorithm.
+    Applies a rigid minimum IOI constraint and a tail-end boundary filter directly 
+    at the source to ensure absolute index parity between annotations and analysis.
     """
-    # Load the audio at the strict 44100Hz requirement for OnsetRate
+    
+    # 1. Load the audio
     audio = es.MonoLoader(filename=audio_path, sampleRate=sr)()
 
-    # OnsetRate returns: (onset_times, onset_rate_per_sec)
-    # We unpack and discard the rate calculation using '_'
-    onset_times, _ = es.OnsetRate()(audio)
+    # 2. Detect raw baseline onsets
+    raw_onset_times, _ = es.OnsetRate()(audio)
 
-    return audio, onset_times
+    # 3. Apply unified structural filtering
+    filtered_onsets = []
+    last_onset_time = -1.0
+
+    for onset in raw_onset_times:
+        if (onset - last_onset_time) < min_ioi:
+            continue
+
+        # segments need to be at least 1024, as that is the frame size used by the
+        # MFCC step
+        start_idx = int(onset * sr)
+        if (len(audio) - start_idx) < 1024:
+            continue
+
+        # If it passes both, preserve it
+        filtered_onsets.append(onset)
+        last_onset_time = onset
+
+    return audio, np.array(filtered_onsets)
 
 def plot_waveform_with_onsets(
     audio,
@@ -321,17 +340,17 @@ def plot_waveform_with_onsets(
     plt.show()
 
 def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=44100, verbose=True,
-                           crest_factor_threshold=5.0, window_ms=200, lat_threshold=0.15, min_ioi=0.10, min_decay=0.0, eps=0.15):
+                           crest_factor_threshold=5.0, window_ms=200, lat_threshold=0.15, min_decay=0.0, eps=0.15):
     """
     Analyzes pre-loaded audio and pre-detected onsets for repetitive events.
-    Now tracks and returns the original onset indices.
+    Expects onset_times to have been pre-filtered via load_and_detect_onsets.
     """
     def print_func(string):
         if verbose:
             print(string)
 
     print_func(f"--- Analyzing: {filename} ---")
-    print_func(f"Total raw onsets detected: {len(onset_times)}")
+    print_func(f"Total structured onsets to process: {len(onset_times)}")
 
     if len(onset_times) == 0:
         return None
@@ -346,20 +365,14 @@ def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=44100,
     w = es.Windowing(type='hann')
 
     features = []
-    last_onset_time = -1.0
 
-    # --> Change 1: Use enumerate to capture the original index
+    # orig_idx now maps 1:1 with your annotation screen indices perfectly
     for orig_idx, onset in enumerate(onset_times):
-        if (onset - last_onset_time) < min_ioi:
-            continue
-
         start_idx = int(onset * sr)
         end_idx = min(start_idx + window_samples, len(audio))
         segment = audio[start_idx:end_idx]
 
-        if len(segment) < 1024:
-            continue
-
+        # Signal calculations
         peak_amp = np.max(np.abs(segment))
         rms_amp = np.sqrt(np.mean(segment**2)) + 1e-9
         crest_factor = peak_amp / rms_amp
@@ -384,9 +397,7 @@ def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=44100,
             segment_mfccs.append(mfcc_coeffs[1:])
 
         mean_mfcc = np.mean(segment_mfccs, axis=0)
-        last_onset_time = onset
 
-        # --> Change 2: Save orig_idx to the dictionary
         features.append({
             'orig_idx': orig_idx,
             'time': onset,
@@ -397,7 +408,7 @@ def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=44100,
         })
 
     if not features:
-        print_func("No onsets survived the initial pre-filtering (IOI, segment length, or Crest Factor).")
+        print_func("No onsets survived the Crest Factor pre-filtering.")
         return None
 
     df = pd.DataFrame(features)

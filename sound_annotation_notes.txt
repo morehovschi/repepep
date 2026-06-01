@@ -1,0 +1,19 @@
+233665: this sound is a decision boundary, ultimately annotated as positive because it is not sustained and can be classified as percussive
+
+79250: will probably not pass initial selection, because it does not have enough decay within the analysis window
+
+37807: would be nice, but stretch, because not really percussive and varying in tone
+
+166348: repeating sequence abcd-abcd-abcd...
+
+571282: speech, repetitions too different
+
+468527: challenging, background noise
+
+410174: barking duet
+
+365089: another dog barking duet
+
+456273: correct envelope, no real repetitions
+
+244637: in the "electric fan" category, but actually is mostly repetitions of one sound
