@@ -536,82 +536,95 @@ def inspect_sound_with_repetition(meta_dir, sound_id,  metadata_df=None,
 
     return []
 
-def evaluate_pipeline(ground_truth, meta_dir, df=None, output_csv="eval_results.csv", show_plot=True,
-                      verbose=True, crest_factor_threshold=5.0, lat_threshold=0.15, window_ms=200,
+def evaluate_pipeline(ground_truth, meta_dir, df, output_csv="eval_results.csv", show_plot=True,
+                      verbose=True, crest_factor_threshold=5.0, lat_threshold=0.15, window_ms=125,
                       min_decay=0.0, eps=0.15):
     """
     ground_truth: dict mapping sound_id -> list of true indices, e.g. {655124: [0, 1, 2]}
+    df: Pre-assembled master DataFrame containing 'sound_id' and 'search_query'
     """
     def print_func(string):
         if verbose:
             print(string)
 
-    total_true = 0
-    total_pred = 0
-    total_hits = 0
-
     # Store per-sound results here
     results_log = []
 
     for sound_id, true_indices in ground_truth.items():
-        # Using show_plot=False to keep the console clean during batch runs
-        pred_indices = inspect_sound_with_repetition(meta_dir, int(sound_id), metadata_df=df, show_plot=show_plot,
-                                                     crest_factor_threshold=crest_factor_threshold, lat_threshold=lat_threshold,
-                                                     window_ms=window_ms, min_decay=min_decay, eps=eps, verbose=verbose)
+        pred_indices = inspect_sound_with_repetition(
+            meta_dir, int(sound_id), metadata_df=df, show_plot=show_plot,
+            crest_factor_threshold=crest_factor_threshold, lat_threshold=lat_threshold,
+            window_ms=window_ms, min_decay=min_decay, eps=eps, verbose=verbose
+        )
 
         true_set = set(true_indices)
         pred_set = set(pred_indices)
 
         hits = len(true_set.intersection(pred_set))
-
-        total_true += len(true_set)
-        total_pred += len(pred_set)
-        total_hits += hits
+        
+        file_has_reps = len(true_set) > 0
+        file_pred_reps = len(pred_set) > 0
 
         # --- PER-SOUND METRICS ---
-        if len(true_set) == 0 and len(pred_set) == 0:
-            # Correct Rejection
-            p, r, f = 1.0, 1.0, 1.0
-        elif len(true_set) == 0 or len(pred_set) == 0:
-            # Complete failure (either hallucinated onsets, or missed all true onsets)
-            p, r, f = 0.0, 0.0, 0.0
+        if not file_has_reps:
+            p, r, f = None, None, None
         else:
-            # Standard calculation
-            p = hits / len(pred_set)
+            p = hits / len(pred_set) if len(pred_set) > 0 else 0.0
             r = hits / len(true_set)
             f = 2 * (p * r) / (p + r) if (p + r) > 0 else 0.0
 
-        # Get query from df
-        query_used = "Unknown"
-        if df is not None:
-            match = df[df['sound_id'] == int(sound_id)]
-            if not match.empty and 'search_query' in match.columns:
-                query_used = match.iloc[0]['search_query']
+        # Direct row lookup from your pre-cleaned DataFrame
+        query_used = df.loc[df['sound_id'] == int(sound_id), 'search_query'].iloc[0]
 
-        # Append to log
+        # Append to log with structural tier metrics
         results_log.append({
             'sound_id': sound_id,
             'query': query_used,
             'true_onsets': ",".join(map(str, sorted(list(true_set)))),
             'predicted_onsets': ",".join(map(str, sorted(list(pred_set)))),
-            'precision': round(p, 3),
-            'recall': round(r, 3),
-            'f1': round(f, 3)
+            'file_has_reps': int(file_has_reps),
+            'file_pred_reps': int(file_pred_reps),
+            'onset_hits': hits,
+            'onset_true_count': len(true_set),
+            'onset_pred_count': len(pred_set),
+            'precision': round(p, 3) if p is not None else None,
+            'recall': round(r, 3) if r is not None else None,
+            'f1': round(f, 3) if f is not None else None
         })
  
-        print_func(f"ID {sound_id} | True: {true_set} | Pred: {pred_set} | F1: {f:.2f}\n")
+        print_func(f"ID {sound_id} | True Count: {len(true_set)} | Pred Count: {len(pred_set)} | Onset F1: {f if f is not None else 'NaN'}\n")
 
-    # --- GLOBAL METRICS ---
-    global_precision = total_hits / total_pred if total_pred > 0 else 0
-    global_recall = total_hits / total_true if total_true > 0 else 0
-    global_f1 = 2 * (global_precision * global_recall) / (global_precision + global_recall) if (global_precision + global_recall) > 0 else 0
+    # --- TIED GLOBAL METRICS ---
+    # Tier 1: Gatekeeper Classification Counts
+    rec_tp = sum(1 for row in results_log if row['file_has_reps'] and row['file_pred_reps'])
+    rec_tn = sum(1 for row in results_log if not row['file_has_reps'] and not row['file_pred_reps'])
+    rec_fp = sum(1 for row in results_log if not row['file_has_reps'] and row['file_pred_reps'])
+    rec_fn = sum(1 for row in results_log if row['file_has_reps'] and not row['file_pred_reps'])
 
-    print_func("\n=== FINAL EVALUATION ===")
-    print_func(f"Precision: {global_precision:.2f}")
-    print_func(f"Recall:    {global_recall:.2f}")
-    print_func(f"F1 Score:  {global_f1:.2f}")
+    g_acc = (rec_tp + rec_tn) / len(results_log) if results_log else 0.0
+    g_spec = rec_tn / (rec_tn + rec_fp) if (rec_tn + rec_fp) > 0 else 0.0
+    g_prec = rec_tp / (rec_tp + rec_fp) if (rec_tp + rec_fp) > 0 else 0.0
+    g_rec = rec_tp / (rec_tp + rec_fn) if (rec_tp + rec_fn) > 0 else 0.0
+    g_f1 = 2 * (g_prec * g_rec) / (g_prec + g_rec) if (g_prec + g_rec) > 0 else 0.0
+
+    # Tier 2: Tracker Localizer Counts (Evaluated strictly on true positive files)
+    t_true = sum(row['onset_true_count'] for row in results_log if row['file_has_reps'])
+    t_pred = sum(row['onset_pred_count'] for row in results_log if row['file_has_reps'])
+    t_hits = sum(row['onset_hits'] for row in results_log if row['file_has_reps'])
+
+    t_precision = t_hits / t_pred if t_pred > 0 else 0.0
+    t_recall = t_hits / t_true if t_true > 0 else 0.0
+    t_f1 = 2 * (t_precision * t_recall) / (t_precision + t_recall) if (t_precision + t_recall) > 0 else 0.0
+
+    print_func("\n=== FINAL TWO-TIER EVALUATION ===")
+    print_func(f"Layer 1 (Gatekeeper) Accuracy:    {g_acc:.3f}")
+    print_func(f"Layer 1 (Gatekeeper) Specificity: {g_spec:.3f} (Correct Noise Rejections)")
+    print_func(f"Layer 1 (Gatekeeper) F1 Score:    {g_f1:.3f}")
+    print_func(f"Layer 2 (Tracker) Global Precision: {t_precision:.3f}")
+    print_func(f"Layer 2 (Tracker) Global Recall:    {t_recall:.3f}")
+    print_func(f"Layer 2 (Tracker) Global F1 Score:  {t_f1:.3f}")
 
     # Save the CSV
     results_df = pd.DataFrame(results_log)
     results_df.to_csv(output_csv, index=False)
-    print_func(f"\nSaved detailed per-sound evaluation to '{output_csv}'")
+    print_func(f"\nSaved detailed two-tier evaluation to '{output_csv}'")
