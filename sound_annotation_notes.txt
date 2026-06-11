@@ -17,3 +17,47 @@
 456273: correct envelope, no real repetitions
 
 244637: in the "electric fan" category, but actually is mostly repetitions of one sound
+
+238246, 718947, 507489: very fast gunshot sounds
+
+655834, 79025: repetitions, not of the right kind
+
+74985: different sounding utterances of the same word
+
+497198: very significant variation
+
+721073: extreme dynamic variation
+
+703000: extreme variation, deemed as different sounds
+
+233664: shake, deemed non-repetitive
+
+481836: two repetitions, two sources
+
+616866: extreme dynamic variation
+
+326922: two different types of knocks
+
+399284: different pops
+
+591478: some pops too fast
+
+171540: chosen the most similar pops
+
+449687: reversed pops
+
+412699: not all onsets detected
+
+802606: difficult to choose between pops; chose the more aggressive ones for consistency
+
+212974: pseudo music transcription
+
+267627: many onsets, careful choosing
+
+130939: extreme dynamic variation
+
+187865: strong background noise
+
+592130: very strong background noise
+
+16451: very challening, almost like music transcription

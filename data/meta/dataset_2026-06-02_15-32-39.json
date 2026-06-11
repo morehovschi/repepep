@@ -1,0 +1,6 @@
+{
+  "timestamp": "2026-06-02_15-32-39",
+  "num_sounds": 40,
+  "query": "gunshots -music -loop -bass -electronic -signature -synth -bpm -beat -chord -tempo -stereo",
+  "subdir_path": "../data/audio/gunshots"
+}
