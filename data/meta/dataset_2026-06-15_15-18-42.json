@@ -1,0 +1,6 @@
+{
+  "timestamp": "2026-06-15_15-18-42",
+  "num_sounds": 40,
+  "query": "train -music -loop -bass -electronic -signature -synth -bpm -beat -chord -tempo -stereo",
+  "subdir_path": "../data/audio/train"
+}

@@ -1,0 +1,6 @@
+{
+  "timestamp": "2026-06-13_16-27-11",
+  "num_sounds": 40,
+  "query": "bell -music -loop -bass -electronic -signature -synth -bpm -beat -chord -tempo -stereo",
+  "subdir_path": "../data/audio/bell"
+}

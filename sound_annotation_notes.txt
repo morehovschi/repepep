@@ -54,10 +54,16 @@
 
 267627: many onsets, careful choosing
 
-130939: extreme dynamic variation
+130939, 406692, 655837, 653393: extreme dynamic variation
 
 187865: strong background noise
 
 592130: very strong background noise
 
 16451: very challening, almost like music transcription
+
+490312: last 4 onsets have a different timbre
+
+662633: music
+
+138099: very clear engine beating pattern
