@@ -15,6 +15,13 @@ from sklearn.metrics import pairwise_distances
 from matplotlib.lines import Line2D
 from IPython.display import Audio, display
 
+_ENVELOPE = es.Envelope()
+_LOG_ATTACK = es.LogAttackTime()
+_STRONG_DECAY = es.StrongDecay()
+_SPECTRUM = es.Spectrum()
+_MFCC = es.MFCC(inputSize=513)
+_WINDOWING = es.Windowing(type='hann')
+
 def query_freesound(query, filter, client, fs_store_metadata_fields, num_results=10):
     """Queries freesound with the given query and filter values.
     If no filter is given, a default filter is added to only get sounds shorter than 10 seconds.
@@ -358,13 +365,6 @@ def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=44100,
 
     window_samples = int((window_ms / 1000.0) * sr)
 
-    envelope = es.Envelope()
-    log_attack = es.LogAttackTime()
-    strong_decay = es.StrongDecay()
-    spectrum = es.Spectrum()
-    mfcc = es.MFCC(inputSize=513)
-    w = es.Windowing(type='hann')
-
     features = []
 
     # orig_idx now maps 1:1 with your annotation screen indices perfectly
@@ -381,20 +381,20 @@ def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=44100,
         if crest_factor < crest_factor_threshold:
             continue
 
-        env = envelope(segment)
+        env = _ENVELOPE(segment)
         try:
-            lat = log_attack(env)[0]
+            lat = _LOG_ATTACK(env)[0]
         except:
             lat = 1.0
 
         try:
-            decay = strong_decay(segment)
+            decay = _STRONG_DECAY(segment)
         except:
             decay = 0.0
 
         segment_mfccs = []
         for frame in es.FrameGenerator(segment, frameSize=1024, hopSize=512, startFromZero=True):
-            _, mfcc_coeffs = mfcc(spectrum(w(frame)))
+            _, mfcc_coeffs = _MFCC(_SPECTRUM(_WINDOWING(frame)))
             segment_mfccs.append(mfcc_coeffs[1:])
 
         mean_mfcc = np.mean(segment_mfccs, axis=0)
