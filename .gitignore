@@ -9,3 +9,4 @@ data/audio
 readings
 backup/
 data/grid_search*/*_details.csv
+*.swp

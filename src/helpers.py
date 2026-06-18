@@ -7,6 +7,7 @@ import essentia.standard as es
 import matplotlib.pyplot as plt
 import numpy as np
 import sklearn
+import itertools
 import matplotlib.transforms as transforms
 
 from sklearn.cluster import DBSCAN
@@ -203,10 +204,10 @@ def ensure_datasets_audio(meta_dir,client,verbose=True):
 def load_and_detect_onsets(audio_path, sr=44100, min_ioi=0.083):
     """
     Loads an audio file and detects its onsets using Essentia's OnsetRate algorithm.
-    Applies a rigid minimum IOI constraint and a tail-end boundary filter directly 
+    Applies a rigid minimum IOI constraint and a tail-end boundary filter directly
     at the source to ensure absolute index parity between annotations and analysis.
     """
-    
+
     # 1. Load the audio
     audio = es.MonoLoader(filename=audio_path, sampleRate=sr)()
 
@@ -561,7 +562,7 @@ def evaluate_pipeline(ground_truth, meta_dir, df, output_csv="eval_results.csv",
         pred_set = set(pred_indices)
 
         hits = len(true_set.intersection(pred_set))
-        
+
         file_has_reps = len(true_set) > 0
         file_pred_reps = len(pred_set) > 0
 
@@ -591,7 +592,7 @@ def evaluate_pipeline(ground_truth, meta_dir, df, output_csv="eval_results.csv",
             'recall': round(r, 3) if r is not None else None,
             'f1': round(f, 3) if f is not None else None
         })
- 
+
         print_func(f"ID {sound_id} | True Count: {len(true_set)} | Pred Count: {len(pred_set)} | Onset F1: {f if f is not None else 'NaN'}\n")
 
     # --- TIED GLOBAL METRICS ---
@@ -628,3 +629,79 @@ def evaluate_pipeline(ground_truth, meta_dir, df, output_csv="eval_results.csv",
     results_df = pd.DataFrame(results_log)
     results_df.to_csv(output_csv, index=False)
     print_func(f"\nSaved detailed two-tier evaluation to '{output_csv}'")
+
+def run_pipeline_grid_search(ground_truth, meta_dir, df, output_dir, param_grid):
+    """
+    Executes a grid search across multiple parameter combinations for the audio pipeline.
+    Saves individual run details and a master summary sheet tracking both evaluation tiers.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    keys, values = zip(*param_grid.items())
+    combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
+
+    print(f"Starting Grid Search. Total configurations to evaluate: {len(combinations)}")
+    summary_log = []
+
+    for i, params in enumerate(combinations):
+        run_id = f"run_{i+1:03d}"
+        print(f"[{run_id}/{len(combinations)}] Testing: {params}")
+
+        detailed_csv_path = os.path.join(output_dir, f"{run_id}_details.csv")
+
+        evaluate_pipeline(
+            ground_truth=ground_truth,
+            meta_dir=meta_dir,
+            df=df,
+            output_csv=detailed_csv_path,
+            show_plot=False,
+            verbose=False,
+            **params
+        )
+
+        run_df = pd.read_csv(detailed_csv_path)
+
+        # Tier 1 Math: Recording level confusion matrix
+        rec_tp = len(run_df[(run_df['file_has_reps'] == 1) & (run_df['file_pred_reps'] == 1)])
+        rec_tn = len(run_df[(run_df['file_has_reps'] == 0) & (run_df['file_pred_reps'] == 0)])
+        rec_fp = len(run_df[(run_df['file_has_reps'] == 0) & (run_df['file_pred_reps'] == 1)])
+        rec_fn = len(run_df[(run_df['file_has_reps'] == 1) & (run_df['file_pred_reps'] == 0)])
+
+        g_acc = (rec_tp + rec_tn) / len(run_df) if len(run_df) > 0 else 0.0
+        g_spec = rec_tn / (rec_tn + rec_fp) if (rec_tn + rec_fp) > 0 else 0.0
+        g_prec = rec_tp / (rec_tp + rec_fp) if (rec_tp + rec_fp) > 0 else 0.0
+        g_rec = rec_tp / (rec_tp + rec_fn) if (rec_tp + rec_fn) > 0 else 0.0
+        g_f1 = 2 * (g_prec * g_rec) / (g_prec + g_rec) if (g_prec + g_rec) > 0 else 0.0
+
+        # Tier 2 Math: Onset tracking matrix (Positive files only)
+        pos_df = run_df[run_df['file_has_reps'] == 1]
+        t_true = pos_df['onset_true_count'].sum()
+        t_pred = pos_df['onset_pred_count'].sum()
+        t_hits = pos_df['onset_hits'].sum()
+
+        t_precision = t_hits / t_pred if t_pred > 0 else 0.0
+        t_recall = t_hits / t_true if t_true > 0 else 0.0
+        t_f1 = 2 * (t_precision * t_recall) / (t_precision + t_recall) if (t_precision + t_recall) > 0 else 0.0
+
+        summary_row = {
+            'run_id': run_id,
+            **params,
+            'gatekeeper_accuracy': round(g_acc, 3),
+            'gatekeeper_specificity': round(g_spec, 3),
+            'gatekeeper_precision': round(g_prec, 3),
+            'gatekeeper_recall': round(g_rec, 3),
+            'gatekeeper_f1': round(g_f1, 3),
+            'tracker_precision': round(t_precision, 3),
+            'tracker_recall': round(t_recall, 3),
+            'tracker_f1': round(t_f1, 3)
+        }
+        summary_log.append(summary_row)
+
+    summary_df = pd.DataFrame(summary_log)
+    summary_csv_path = os.path.join(output_dir, "grid_search_summary.csv")
+    summary_df.to_csv(summary_csv_path, index=False)
+
+    print(f"\n==== GRID SEARCH COMPLETE ====")
+    print(f"Master summary file generated at: {summary_csv_path}")
+
+    return summary_df
