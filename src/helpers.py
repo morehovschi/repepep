@@ -348,7 +348,8 @@ def plot_waveform_with_onsets(
     plt.show()
 
 def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=44100, verbose=True,
-                           crest_factor_threshold=5.0, window_ms=200, lat_threshold=0.15, min_decay=0.0, eps=0.15):
+                           crest_factor_threshold=5.0, window_ms=200, lat_threshold=0.15, min_decay=0.0, eps=0.15,
+                           mfcc_cache=None):
     """
     Analyzes pre-loaded audio and pre-detected onsets for repetitive events.
     Expects onset_times to have been pre-filtered via load_and_detect_onsets.
@@ -356,6 +357,8 @@ def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=44100,
     def print_func(string):
         if verbose:
             print(string)
+
+    mfcc_cache = mfcc_cache or {}
 
     print_func(f"--- Analyzing: {filename} ---")
     print_func(f"Total structured onsets to process: {len(onset_times)}")
@@ -392,12 +395,15 @@ def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=44100,
         except:
             decay = 0.0
 
-        segment_mfccs = []
-        for frame in es.FrameGenerator(segment, frameSize=1024, hopSize=512, startFromZero=True):
-            _, mfcc_coeffs = _MFCC(_SPECTRUM(_WINDOWING(frame)))
-            segment_mfccs.append(mfcc_coeffs[1:])
-
-        mean_mfcc = np.mean(segment_mfccs, axis=0)
+        if orig_idx in mfcc_cache:
+            mean_mfcc = mfcc_cache[orig_idx]
+        else:
+            segment_mfccs = []
+            for frame in es.FrameGenerator(segment, frameSize=1024, hopSize=512, startFromZero=True):
+                _, mfcc_coeffs = _MFCC(_SPECTRUM(_WINDOWING(frame)))
+                segment_mfccs.append(mfcc_coeffs[1:])
+            mean_mfcc = np.mean(segment_mfccs, axis=0)
+            mfcc_cache[orig_idx] = mean_mfcc
 
         features.append({
             'orig_idx': orig_idx,
@@ -443,7 +449,7 @@ def inspect_sound_with_repetition(meta_dir, sound_id,  metadata_df=None,
                                   crest_factor_threshold=5.0,
                                   lat_threshold=0.15, window_ms=200,
                                   min_decay=0.0, eps=0.15, audio=None,
-                                  onset_times=None):
+                                  onset_times=None, mfcc_cache=None):
     """
     Wrapper function updated to accept a pre-loaded metadata DataFrame for efficiency,
     and an option to disable plotting during batch evaluation.
@@ -451,6 +457,9 @@ def inspect_sound_with_repetition(meta_dir, sound_id,  metadata_df=None,
     def print_func(string):
         if verbose:
             print(string)
+
+    # this audio file's specific mfcc cache
+    mfcc_cache = mfcc_cache or {}
 
     match = None
 
@@ -485,6 +494,7 @@ def inspect_sound_with_repetition(meta_dir, sound_id,  metadata_df=None,
             min_decay=min_decay,
             eps=eps,
             verbose=verbose,
+            mfcc_cache=mfcc_cache,
         )
 
         rep_times = []
@@ -541,7 +551,7 @@ def inspect_sound_with_repetition(meta_dir, sound_id,  metadata_df=None,
 
 def evaluate_pipeline(ground_truth, meta_dir, df, output_csv="eval_results.csv", show_plot=True,
                       verbose=True, crest_factor_threshold=5.0, lat_threshold=0.15, window_ms=125,
-                      min_decay=0.0, eps=0.15, audio_cache=None):
+                      min_decay=0.0, eps=0.15, audio_cache=None, mfcc_cache=None):
     """
     ground_truth: dict mapping sound_id -> list of true indices, e.g. {655124: [0, 1, 2]}
     df: Pre-assembled master DataFrame containing 'sound_id' and 'search_query'
@@ -551,6 +561,7 @@ def evaluate_pipeline(ground_truth, meta_dir, df, output_csv="eval_results.csv",
             print(string)
 
     audio_cache = audio_cache or {}
+    mfcc_cache = mfcc_cache or {}
 
     # Store per-sound results here
     results_log = []
@@ -562,11 +573,14 @@ def evaluate_pipeline(ground_truth, meta_dir, df, output_csv="eval_results.csv",
         else:
             audio, onset_times = None, None
 
+        if sound_id_int not in mfcc_cache:
+            mfcc_cache[sound_id_int] = {}
+
         pred_indices = inspect_sound_with_repetition(
             meta_dir, int(sound_id), metadata_df=df, show_plot=show_plot,
             crest_factor_threshold=crest_factor_threshold, lat_threshold=lat_threshold,
             window_ms=window_ms, min_decay=min_decay, eps=eps, verbose=verbose,
-            audio=audio, onset_times=onset_times,
+            audio=audio, onset_times=onset_times,mfcc_cache=mfcc_cache[sound_id_int],
         )
 
         true_set = set(true_indices)
@@ -656,6 +670,8 @@ def run_pipeline_grid_search(ground_truth, meta_dir, df, output_dir, param_grid)
     for _, row in df.iterrows():
         audio_cache[row["sound_id"]] = load_and_detect_onsets(row["local_path"])
 
+    mfcc_cache = {}
+
     print(f"Starting Grid Search. Total configurations to evaluate: {len(combinations)}")
     summary_log = []
 
@@ -673,6 +689,7 @@ def run_pipeline_grid_search(ground_truth, meta_dir, df, output_dir, param_grid)
             show_plot=False,
             verbose=False,
             audio_cache=audio_cache,
+            mfcc_cache=mfcc_cache,
             **params
         )
 
