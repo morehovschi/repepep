@@ -348,17 +348,18 @@ def plot_waveform_with_onsets(
     plt.show()
 
 def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=44100, verbose=True,
-                           crest_factor_threshold=5.0, window_ms=200, lat_threshold=0.15, min_decay=0.0, eps=0.15,
+                           crest_factor_threshold=5.0, window_ms=125, lat_threshold=0.15, min_decay=0.0, eps=0.15,
                            mfcc_cache=None):
     """
     Analyzes pre-loaded audio and pre-detected onsets for repetitive events.
-    Expects onset_times to have been pre-filtered via load_and_detect_onsets.
+    Uses an adaptive look-ahead window (up to 1000ms) capped by the next onset 
+    or file boundaries, with a minimum floor of window_ms.
     """
     def print_func(string):
         if verbose:
             print(string)
 
-    mfcc_cache = mfcc_cache or {}
+    mfcc_cache = mfcc_cache if mfcc_cache is not None else {}
 
     print_func(f"--- Analyzing: {filename} ---")
     print_func(f"Total structured onsets to process: {len(onset_times)}")
@@ -366,17 +367,29 @@ def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=44100,
     if len(onset_times) == 0:
         return None
 
-    window_samples = int((window_ms / 1000.0) * sr)
-
     features = []
+    total_duration = len(audio) / sr
 
-    # orig_idx now maps 1:1 with your annotation screen indices perfectly
     for orig_idx, onset in enumerate(onset_times):
+        # 1. Calculate Adaptive Look-Ahead Window
+        if orig_idx < len(onset_times) - 1:
+            # Distance to the immediate next onset
+            time_to_next = onset_times[orig_idx + 1] - onset
+        else:
+            # Last onset: distance to the absolute end of the audio file
+            time_to_next = total_duration - onset
+
+        # Window strategy: Expand up to 1.0s, but cap at time_to_next.
+        # Ensure it never drops below our baseline floor (window_ms) to protect frame generation.
+        baseline_floor_s = window_ms / 1000.0
+        adaptive_window_s = max(baseline_floor_s, min(1.0, time_to_next))
+        
+        window_samples = int(adaptive_window_s * sr)
         start_idx = int(onset * sr)
         end_idx = min(start_idx + window_samples, len(audio))
         segment = audio[start_idx:end_idx]
 
-        # Signal calculations
+        # 2. Gatekeeper: Crest Factor Filter
         peak_amp = np.max(np.abs(segment))
         rms_amp = np.sqrt(np.mean(segment**2)) + 1e-9
         crest_factor = peak_amp / rms_amp
@@ -384,26 +397,42 @@ def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=44100,
         if crest_factor < crest_factor_threshold:
             continue
 
-        env = _ENVELOPE(segment)
-        try:
-            lat = _LOG_ATTACK(env)[0]
-        except:
-            lat = 1.0
-
-        try:
-            decay = _STRONG_DECAY(segment)
-        except:
-            decay = 0.0
-
+        # 3. Check Cache (Now skipping BOTH temporal features and MFCC loops!)
         if orig_idx in mfcc_cache:
-            mean_mfcc = mfcc_cache[orig_idx]
+            cached_data = mfcc_cache[orig_idx]
+            lat = cached_data['lat']
+            decay = cached_data['decay']
+            mean_mfcc = cached_data['mfcc']
         else:
+            # Cache Miss: Run the full extraction suite on this adaptive segment
+            env = _ENVELOPE(segment)
+            try:
+                lat = _LOG_ATTACK(env)[0]
+            except:
+                lat = 1.0
+
+            try:
+                decay = _STRONG_DECAY(segment)
+            except:
+                decay = 0.0
+
             segment_mfccs = []
             for frame in es.FrameGenerator(segment, frameSize=1024, hopSize=512, startFromZero=True):
                 _, mfcc_coeffs = _MFCC(_SPECTRUM(_WINDOWING(frame)))
                 segment_mfccs.append(mfcc_coeffs[1:])
-            mean_mfcc = np.mean(segment_mfccs, axis=0)
-            mfcc_cache[orig_idx] = mean_mfcc
+            
+            # If a segment is incredibly brief, handle empty frame lists gracefully
+            if len(segment_mfccs) > 0:
+                mean_mfcc = np.mean(segment_mfccs, axis=0)
+            else:
+                mean_mfcc = np.zeros(13) # Fallback to zeroed feature vector if frame gen is empty
+
+            # Save everything to the cache bundle
+            mfcc_cache[orig_idx] = {
+                'lat': lat,
+                'decay': decay,
+                'mfcc': mean_mfcc
+            }
 
         features.append({
             'orig_idx': orig_idx,
