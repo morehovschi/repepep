@@ -442,7 +442,8 @@ def inspect_sound_with_repetition(meta_dir, sound_id,  metadata_df=None,
                                   show_plot=True, verbose=True,
                                   crest_factor_threshold=5.0,
                                   lat_threshold=0.15, window_ms=200,
-                                  min_decay=0.0, eps=0.15):
+                                  min_decay=0.0, eps=0.15, audio=None,
+                                  onset_times=None):
     """
     Wrapper function updated to accept a pre-loaded metadata DataFrame for efficiency,
     and an option to disable plotting during batch evaluation.
@@ -471,7 +472,8 @@ def inspect_sound_with_repetition(meta_dir, sound_id,  metadata_df=None,
         local_path = row["local_path"]
         filename = os.path.basename(local_path)
 
-        audio, onset_times = load_and_detect_onsets(local_path)
+        if audio is None or onset_times is None:
+            audio, onset_times = load_and_detect_onsets(local_path)
 
         analysis_df = analyze_repetitiveness(
             audio=audio,
@@ -539,7 +541,7 @@ def inspect_sound_with_repetition(meta_dir, sound_id,  metadata_df=None,
 
 def evaluate_pipeline(ground_truth, meta_dir, df, output_csv="eval_results.csv", show_plot=True,
                       verbose=True, crest_factor_threshold=5.0, lat_threshold=0.15, window_ms=125,
-                      min_decay=0.0, eps=0.15):
+                      min_decay=0.0, eps=0.15, audio_cache=None):
     """
     ground_truth: dict mapping sound_id -> list of true indices, e.g. {655124: [0, 1, 2]}
     df: Pre-assembled master DataFrame containing 'sound_id' and 'search_query'
@@ -548,14 +550,23 @@ def evaluate_pipeline(ground_truth, meta_dir, df, output_csv="eval_results.csv",
         if verbose:
             print(string)
 
+    audio_cache = audio_cache or {}
+
     # Store per-sound results here
     results_log = []
 
     for sound_id, true_indices in ground_truth.items():
+        sound_id_int = int(sound_id)
+        if sound_id in audio_cache:
+            audio, onset_times = audio_cache[sound_id_int]
+        else:
+            audio, onset_times = None, None
+
         pred_indices = inspect_sound_with_repetition(
             meta_dir, int(sound_id), metadata_df=df, show_plot=show_plot,
             crest_factor_threshold=crest_factor_threshold, lat_threshold=lat_threshold,
-            window_ms=window_ms, min_decay=min_decay, eps=eps, verbose=verbose
+            window_ms=window_ms, min_decay=min_decay, eps=eps, verbose=verbose,
+            audio=audio, onset_times=onset_times,
         )
 
         true_set = set(true_indices)
@@ -640,6 +651,11 @@ def run_pipeline_grid_search(ground_truth, meta_dir, df, output_dir, param_grid)
     keys, values = zip(*param_grid.items())
     combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
 
+    # cache audio and onset data, to be used for all runs
+    audio_cache = {}
+    for _, row in df.iterrows():
+        audio_cache[row["sound_id"]] = load_and_detect_onsets(row["local_path"])
+
     print(f"Starting Grid Search. Total configurations to evaluate: {len(combinations)}")
     summary_log = []
 
@@ -656,6 +672,7 @@ def run_pipeline_grid_search(ground_truth, meta_dir, df, output_dir, param_grid)
             output_csv=detailed_csv_path,
             show_plot=False,
             verbose=False,
+            audio_cache=audio_cache,
             **params
         )
 
