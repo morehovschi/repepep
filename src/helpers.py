@@ -19,7 +19,7 @@ _ENVELOPE = es.Envelope()
 _LOG_ATTACK = es.LogAttackTime()
 _STRONG_DECAY = es.StrongDecay()
 _SPECTRUM = es.Spectrum()
-_MFCC = es.MFCC(inputSize=513)
+_MFCC = es.MFCC(inputSize=513, sampleRate=16_000, highFrequencyBound=8_000)
 _WINDOWING = es.Windowing(type='hann')
 
 def query_freesound(query, filter, client, fs_store_metadata_fields, num_results=10):
@@ -208,20 +208,19 @@ def ensure_datasets_audio(meta_dir,client,verbose=True):
     if verbose:
         print(f"\nDone. Re-downloaded {total_missing} missing files.")
 
-def load_and_detect_onsets(audio_path, sr=44100, min_ioi=0.083):
+def load_and_detect_onsets(audio_path, min_ioi=0.083):
     """
-    Loads an audio file and detects its onsets using Essentia's OnsetRate algorithm.
-    Applies a rigid minimum IOI constraint and a tail-end boundary filter directly
-    at the source to ensure absolute index parity between annotations and analysis.
+    Finds onsets using the 44.1kHz baseline to preserve annotations,
+    but returns the 16kHz audio for efficient downstream feature analysis.
     """
+    # 1. Load both streams
+    audio_44k = es.MonoLoader(filename=audio_path, sampleRate=44100)()
+    audio_16k = es.MonoLoader(filename=audio_path, sampleRate=16000)()
 
-    # 1. Load the audio
-    audio = es.MonoLoader(filename=audio_path, sampleRate=sr)()
+    # 2. Detect raw baseline onsets using the 44.1kHz stream
+    raw_onset_times, _ = es.OnsetRate()(audio_44k)
 
-    # 2. Detect raw baseline onsets
-    raw_onset_times, _ = es.OnsetRate()(audio)
-
-    # 3. Apply unified structural filtering
+    # 3. Filter onsets based on the 16kHz audio limits
     filtered_onsets = []
     last_onset_time = -1.0
 
@@ -229,22 +228,21 @@ def load_and_detect_onsets(audio_path, sr=44100, min_ioi=0.083):
         if (onset - last_onset_time) < min_ioi:
             continue
 
-        # segments need to be at least 1024, as that is the frame size used by the
-        # MFCC step
-        start_idx = int(onset * sr)
-        if (len(audio) - start_idx) < 1024:
+        # Just ensure that where this onset lands in the 16kHz vector,
+        # there are at least 1024 samples left for MFCC feature framing.
+        start_idx_16k = int(onset * 16000)
+        if (len(audio_16k) - start_idx_16k) < 1024:
             continue
 
-        # If it passes both, preserve it
         filtered_onsets.append(onset)
         last_onset_time = onset
 
-    return audio, np.array(filtered_onsets)
+    return audio_16k, np.array(filtered_onsets)
 
 def plot_waveform_with_onsets(
     audio,
     onset_times,
-    sample_rate=44100,
+    sample_rate=16_000,
     start_time=None,
     end_time=None,
     max_annotations=20,
@@ -347,7 +345,7 @@ def plot_waveform_with_onsets(
     plt.tight_layout()
     plt.show()
 
-def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=44100, verbose=True,
+def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=16_000, verbose=True,
                            crest_factor_threshold=5.0, window_ms=200, lat_threshold=0.15,
                            min_decay=0.0, eps=0.15, use_adaptive_window=False):
     """
@@ -465,8 +463,7 @@ def inspect_sound_with_repetition(meta_dir, sound_id,  metadata_df=None,
                                   show_plot=True, verbose=True,
                                   crest_factor_threshold=5.0,
                                   lat_threshold=0.15, window_ms=200,
-                                  min_decay=0.0, eps=0.15, audio=None,
-                                  onset_times=None):
+                                  min_decay=0.0, eps=0.15, sr=16_000):
     """
     Wrapper function updated to accept a pre-loaded metadata DataFrame for efficiency,
     and an option to disable plotting during batch evaluation.
@@ -495,11 +492,11 @@ def inspect_sound_with_repetition(meta_dir, sound_id,  metadata_df=None,
         local_path = row["local_path"]
         filename = os.path.basename(local_path)
 
-        if audio is None or onset_times is None:
-            audio, onset_times = load_and_detect_onsets(local_path)
+        audio, onset_times = load_and_detect_onsets(local_path)
 
         analysis_df = analyze_repetitiveness(
             audio=audio,
+            sr=sr,
             onset_times=onset_times,
             filename=filename,
             crest_factor_threshold=crest_factor_threshold,
@@ -529,8 +526,7 @@ def inspect_sound_with_repetition(meta_dir, sound_id,  metadata_df=None,
             print_func(f"Method: Freesound Native (es.OnsetRate) | Detected: {len(onset_times)} | In Pattern: {len(rep_times)}")
             print_func(f"Detected Repetitive Indices: {rep_indices}")
 
-            sample_rate = 44100
-            time_axis = np.arange(len(audio)) / sample_rate
+            time_axis = np.arange(len(audio)) / sr
 
             fig, ax = plt.subplots(figsize=(14, 4))
             ax.plot(time_axis, audio, color='gray', alpha=0.3, linewidth=0.8)
@@ -564,7 +560,7 @@ def inspect_sound_with_repetition(meta_dir, sound_id,  metadata_df=None,
 
 def evaluate_pipeline(ground_truth, meta_dir, df, output_csv="eval_results.csv", show_plot=True,
                       verbose=True, crest_factor_threshold=5.0, lat_threshold=0.15, window_ms=125,
-                      min_decay=0.0, eps=0.15, audio_cache=None):
+                      min_decay=0.0, eps=0.15):
     """
     ground_truth: dict mapping sound_id -> list of true indices, e.g. {655124: [0, 1, 2]}
     df: Pre-assembled master DataFrame containing 'sound_id' and 'search_query'
@@ -573,23 +569,16 @@ def evaluate_pipeline(ground_truth, meta_dir, df, output_csv="eval_results.csv",
         if verbose:
             print(string)
 
-    audio_cache = audio_cache or {}
-
     # Store per-sound results here
     results_log = []
 
     for sound_id, true_indices in ground_truth.items():
         sound_id_int = int(sound_id)
-        if sound_id in audio_cache:
-            audio, onset_times = audio_cache[sound_id_int]
-        else:
-            audio, onset_times = None, None
 
         pred_indices = inspect_sound_with_repetition(
             meta_dir, int(sound_id), metadata_df=df, show_plot=show_plot,
             crest_factor_threshold=crest_factor_threshold, lat_threshold=lat_threshold,
             window_ms=window_ms, min_decay=min_decay, eps=eps, verbose=verbose,
-            audio=audio, onset_times=onset_times,
         )
 
         true_set = set(true_indices)
@@ -674,11 +663,6 @@ def run_pipeline_grid_search(ground_truth, meta_dir, df, output_dir, param_grid)
     keys, values = zip(*param_grid.items())
     combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
 
-    # cache audio and onset data, to be used for all runs
-    audio_cache = {}
-    for _, row in df.iterrows():
-        audio_cache[row["sound_id"]] = load_and_detect_onsets(row["local_path"])
-
     print(f"Starting Grid Search. Total configurations to evaluate: {len(combinations)}")
     summary_log = []
 
@@ -695,7 +679,6 @@ def run_pipeline_grid_search(ground_truth, meta_dir, df, output_dir, param_grid)
             output_csv=detailed_csv_path,
             show_plot=False,
             verbose=False,
-            audio_cache=audio_cache,
             **params
         )
 
@@ -745,3 +728,4 @@ def run_pipeline_grid_search(ground_truth, meta_dir, df, output_dir, param_grid)
     print(f"Master summary file generated at: {summary_csv_path}")
 
     return summary_df
+
