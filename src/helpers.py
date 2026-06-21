@@ -10,6 +10,7 @@ import sklearn
 import itertools
 import matplotlib.transforms as transforms
 
+from tqdm.auto import tqdm
 from sklearn.cluster import DBSCAN
 from sklearn.metrics import pairwise_distances
 from matplotlib.lines import Line2D
@@ -555,7 +556,7 @@ def evaluate_pipeline(ground_truth, meta_dir, df, output_csv="eval_results.csv",
     # Store per-sound results here
     results_log = []
 
-    for sound_id, onset_data in ground_truth.items():
+    for sound_id, onset_data in tqdm(ground_truth.items(), desc="Evaluating repetition detection", leave=False):
         true_indices = onset_data["repetitive_onset_indices"]
 
         sound_id_int = int(sound_id)
@@ -655,7 +656,7 @@ def run_pipeline_grid_search(ground_truth, meta_dir, df, output_dir, param_grid)
 
     # cache audio and onset data, to be used for all runs
     audio_cache = {}
-    for _, row in df.iterrows():
+    for _, row in tqdm(df.iterrows(), total=len(df), desc="Extracting audio & onsets cache"):
         audio_cache[row["sound_id"]] = load_and_detect_onsets(row["local_path"])
 
     print(f"Starting Grid Search. Total configurations to evaluate: {len(combinations)}")
