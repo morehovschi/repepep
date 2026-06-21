@@ -209,20 +209,19 @@ def ensure_datasets_audio(meta_dir,client,verbose=True):
     if verbose:
         print(f"\nDone. Re-downloaded {total_missing} missing files.")
 
-def load_and_detect_onsets(audio_path, sr=44100, min_ioi=0.083):
+def load_and_detect_onsets(audio_path, high_sr=44100, low_sr=16000, min_ioi=0.083):
     """
-    Loads an audio file and detects its onsets using Essentia's OnsetRate algorithm.
-    Applies a rigid minimum IOI constraint and a tail-end boundary filter directly
-    at the source to ensure absolute index parity between annotations and analysis.
+    Loads audio at two sample rates: detects precise onsets at high_sr, 
+    but returns the audio array downsampled to low_sr for fast feature extraction.
     """
+    # 1. Load high-res audio for sharp onset detection
+    audio_high = es.MonoLoader(filename=audio_path, sampleRate=high_sr)()
+    raw_onset_times, _ = es.OnsetRate()(audio_high)
 
-    # 1. Load the audio
-    audio = es.MonoLoader(filename=audio_path, sampleRate=sr)()
+    # 2. Load low-res audio for fast feature extraction downstream
+    audio_low = es.MonoLoader(filename=audio_path, sampleRate=low_sr)()
 
-    # 2. Detect raw baseline onsets
-    raw_onset_times, _ = es.OnsetRate()(audio)
-
-    # 3. Apply unified structural filtering
+    # 3. Apply unified structural filtering using low_sr boundaries
     filtered_onsets = []
     last_onset_time = -1.0
 
@@ -230,22 +229,21 @@ def load_and_detect_onsets(audio_path, sr=44100, min_ioi=0.083):
         if (onset - last_onset_time) < min_ioi:
             continue
 
-        # segments need to be at least 1024, as that is the frame size used by the
-        # MFCC step
-        start_idx = int(onset * sr)
-        if (len(audio) - start_idx) < 1024:
+        # Ensure the segment won't overshoot the bounds of the LOW-RES audio buffer
+        # during the 1024-frame MFCC window computation
+        start_idx_low = int(onset * low_sr)
+        if (len(audio_low) - start_idx_low) < 1024:
             continue
 
-        # If it passes both, preserve it
         filtered_onsets.append(onset)
         last_onset_time = onset
 
-    return audio, np.array(filtered_onsets)
+    return audio_low, np.array(filtered_onsets)
 
 def plot_waveform_with_onsets(
     audio,
     onset_times,
-    sample_rate=44100,
+    sample_rate=16_000,
     start_time=None,
     end_time=None,
     max_annotations=20,
@@ -348,11 +346,11 @@ def plot_waveform_with_onsets(
     plt.tight_layout()
     plt.show()
 
-def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=44100, verbose=True,
+def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=16000, verbose=True,
                            crest_factor_threshold=5.0, window_ms=200, lat_threshold=0.15, min_decay=0.0, eps=0.15):
     """
-    Analyzes pre-loaded audio and pre-detected onsets for repetitive events.
-    Expects onset_times to have been pre-filtered via load_and_detect_onsets.
+    Analyzes pre-loaded low-res audio and pre-detected high-res onsets.
+    Uses 'sr' (default 16000) to map time locations to low-res sample indices.
     """
     def print_func(string):
         if verbose:
@@ -364,19 +362,19 @@ def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=44100,
     if len(onset_times) == 0:
         return None
 
+    # This sample window now correctly maps to 16kHz
     window_samples = int((window_ms / 1000.0) * sr)
-
     features = []
 
-    # orig_idx now maps 1:1 with your annotation screen indices perfectly
     for orig_idx, onset in enumerate(onset_times):
+        # Onset time (seconds) * 16000 perfectly targets the low-res sample position
         start_idx = int(onset * sr)
         end_idx = min(start_idx + window_samples, len(audio))
         segment = audio[start_idx:end_idx]
 
         # Signal calculations
-        peak_amp = np.max(np.abs(segment))
-        rms_amp = np.sqrt(np.mean(segment**2)) + 1e-9
+        peak_amp = np.max(np.abs(segment)) if len(segment) > 0 else 0
+        rms_amp = np.sqrt(np.mean(segment**2)) + 1e-9 if len(segment) > 0 else 1e-9
         crest_factor = peak_amp / rms_amp
 
         if crest_factor < crest_factor_threshold:
@@ -398,6 +396,9 @@ def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=44100,
             _, mfcc_coeffs = _MFCC(_SPECTRUM(_WINDOWING(frame)))
             segment_mfccs.append(mfcc_coeffs[1:])
 
+        if not segment_mfccs:
+            continue
+
         mean_mfcc = np.mean(segment_mfccs, axis=0)
 
         features.append({
@@ -414,7 +415,6 @@ def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=44100,
         return None
 
     df = pd.DataFrame(features)
-
     percussive_df = df[(df['lat'] < lat_threshold) & (df['decay'] > min_decay)].copy()
     print_func(f"Onsets passing LAT (< {lat_threshold}s) & Decay (> {min_decay}) filters: {len(percussive_df)}")
 
@@ -486,6 +486,7 @@ def inspect_sound_with_repetition(meta_dir, sound_id,  metadata_df=None,
             min_decay=min_decay,
             eps=eps,
             verbose=verbose,
+            sr=16_000,
         )
 
         rep_times = []
@@ -507,7 +508,7 @@ def inspect_sound_with_repetition(meta_dir, sound_id,  metadata_df=None,
             print_func(f"Method: Freesound Native (es.OnsetRate) | Detected: {len(onset_times)} | In Pattern: {len(rep_times)}")
             print_func(f"Detected Repetitive Indices: {rep_indices}")
 
-            sample_rate = 44100
+            sample_rate = 16_000
             time_axis = np.arange(len(audio)) / sample_rate
 
             fig, ax = plt.subplots(figsize=(14, 4))
