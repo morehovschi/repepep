@@ -555,7 +555,9 @@ def evaluate_pipeline(ground_truth, meta_dir, df, output_csv="eval_results.csv",
     # Store per-sound results here
     results_log = []
 
-    for sound_id, true_indices in ground_truth.items():
+    for sound_id, onset_data in ground_truth.items():
+        true_indices = onset_data["repetitive_onset_indices"]
+
         sound_id_int = int(sound_id)
         if sound_id in audio_cache:
             audio, onset_times = audio_cache[sound_id_int]
