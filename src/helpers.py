@@ -211,7 +211,7 @@ def ensure_datasets_audio(meta_dir,client,verbose=True):
 
 def load_and_detect_onsets(audio_path, high_sr=44100, low_sr=16000, min_ioi=0.083):
     """
-    Loads audio at two sample rates: detects precise onsets at high_sr, 
+    Loads audio at two sample rates: detects precise onsets at high_sr,
     but returns the audio array downsampled to low_sr for fast feature extraction.
     """
     # 1. Load high-res audio for sharp onset detection
@@ -351,6 +351,7 @@ def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=16000,
     """
     Analyzes pre-loaded low-res audio and pre-detected high-res onsets.
     Uses 'sr' (default 16000) to map time locations to low-res sample indices.
+    Dynamically adjusts window size based on Inter-Onset Intervals (IOI).
     """
     def print_func(string):
         if verbose:
@@ -362,12 +363,22 @@ def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=16000,
     if len(onset_times) == 0:
         return None
 
-    # This sample window now correctly maps to 16kHz
-    window_samples = int((window_ms / 1000.0) * sr)
     features = []
 
     for orig_idx, onset in enumerate(onset_times):
-        # Onset time (seconds) * 16000 perfectly targets the low-res sample position
+        # 1. Calculate adaptive window size based on the next onset
+        if orig_idx < len(onset_times) - 1:
+            next_onset = onset_times[orig_idx + 1]
+            next_ioi_ms = (next_onset - onset) * 1000.0
+
+            # Dynamic scaling (ioi * 1.5) capped at a maximum of 500ms
+            curr_window_ms = min(next_ioi_ms * 1.5, 500.0)
+        else:
+            # Fallback for the last onset since there is no "next" event
+            curr_window_ms = 500.0
+
+        # 2. Extract the dynamic sample window
+        window_samples = int((curr_window_ms / 1000.0) * sr)
         start_idx = int(onset * sr)
         end_idx = min(start_idx + window_samples, len(audio))
         segment = audio[start_idx:end_idx]
@@ -407,7 +418,8 @@ def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=16000,
             'lat': lat,
             'decay': decay,
             'crest': crest_factor,
-            'mfcc': mean_mfcc
+            'mfcc': mean_mfcc,
+            'window_ms_used': curr_window_ms  # Tracked for debugging/analysis
         })
 
     if not features:
