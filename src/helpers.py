@@ -347,8 +347,8 @@ def plot_waveform_with_onsets(
     plt.show()
 
 def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=16000, verbose=True,
-                           crest_factor_threshold=5.0, window_ms=200, lat_threshold=0.15, min_decay=0.0, eps=0.15,
-                           nn_extractor=None):
+                           crest_factor_threshold=5.0, window_ms=200, lat_threshold=0.15,
+                           min_decay=0.0, eps=0.15, nn_extractor=None, feature_cache=None):
     """
     Analyzes pre-loaded low-res audio and pre-detected high-res onsets.
     Uses 'sr' (default 16000) to map time locations to low-res sample indices.
@@ -363,6 +363,11 @@ def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=16000,
 
     if len(onset_times) == 0:
         return None
+
+    if feature_cache is None:
+        feature_cache = {}
+    if filename not in feature_cache:
+        feature_cache[filename] = {}
 
     features = []
 
@@ -403,28 +408,31 @@ def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=16000,
         except:
             decay = 0.0
 
-        if nn_extractor is None:
-            segment_mfccs = []
-            for frame in es.FrameGenerator(segment, frameSize=1024, hopSize=512, startFromZero=True):
-                _, mfcc_coeffs = _MFCC(_WINDOWING(_SPECTRUM(frame)))
-                segment_mfccs.append(mfcc_coeffs[1:]) # Drop 0th coefficient
+        if orig_idx not in feature_cache[filename]:
+            if nn_extractor is None:
+                segment_mfccs = []
+                for frame in es.FrameGenerator(segment, frameSize=1024, hopSize=512, startFromZero=True):
+                    _, mfcc_coeffs = _MFCC(_WINDOWING(_SPECTRUM(frame)))
+                    segment_mfccs.append(mfcc_coeffs[1:]) # Drop 0th coefficient
 
-            if not segment_mfccs:
-                continue
-            # Classical representation: Average MFCC frame profile
-            feature_vector = np.mean(segment_mfccs, axis=0)
-
-        else:
-            # Pad segment to exactly 1 second (16000 samples) to satisfy VGGish's receptive field
-            required_samples = sr  # 16000 samples for a 16kHz model
-            if len(segment) < required_samples:
-                padded_segment = np.pad(segment, (0, required_samples - len(segment)), mode='constant')
+                if not segment_mfccs:
+                    continue
+                # Classical representation: Average MFCC frame profile
+                feature_vector = np.mean(segment_mfccs, axis=0)
             else:
-                padded_segment = segment[:required_samples]
+                # Pad segment to exactly 1 second (16000 samples) to satisfy VGGish's receptive field
+                required_samples = sr  # 16000 samples for a 16kHz model
+                if len(segment) < required_samples:
+                    padded_segment = np.pad(segment, (0, required_samples - len(segment)), mode='constant')
+                else:
+                    padded_segment = segment[:required_samples]
 
-            # Neural representation: Extract the 128-D vector natively via Essentia
-            # (Ensuring it returns a flat 1D array)
-            feature_vector = nn_extractor(padded_segment).flatten()
+                # Neural representation: Extract the 128-D vector natively via Essentia
+                # (Ensuring it returns a flat 1D array)
+                feature_vector = nn_extractor(padded_segment).flatten()
+            feature_cache[filename][orig_idx] = feature_vector
+        else:
+            feature_vector = feature_cache[filename][orig_idx]
 
         features.append({
             'orig_idx': orig_idx,
@@ -470,7 +478,8 @@ def inspect_sound_with_repetition(meta_dir, sound_id,  metadata_df=None,
                                   crest_factor_threshold=5.0,
                                   lat_threshold=0.15, window_ms=200,
                                   min_decay=0.0, eps=0.15, audio=None,
-                                  onset_times=None, nn_extractor=None):
+                                  onset_times=None, nn_extractor=None,
+                                  feature_cache=None):
     """
     Wrapper function updated to accept a pre-loaded metadata DataFrame for efficiency,
     and an option to disable plotting during batch evaluation.
@@ -514,6 +523,7 @@ def inspect_sound_with_repetition(meta_dir, sound_id,  metadata_df=None,
             verbose=verbose,
             sr=16_000,
             nn_extractor=nn_extractor,
+            feature_cache=feature_cache,
         )
 
         rep_times = []
@@ -570,7 +580,8 @@ def inspect_sound_with_repetition(meta_dir, sound_id,  metadata_df=None,
 
 def evaluate_pipeline(ground_truth, meta_dir, df, output_csv="eval_results.csv", show_plot=True,
                       verbose=True, crest_factor_threshold=5.0, lat_threshold=0.15, window_ms=125,
-                      min_decay=0.0, eps=0.15, audio_cache=None, nn_extractor=None):
+                      min_decay=0.0, eps=0.15, audio_cache=None, nn_extractor=None,
+                      feature_cache=None):
     """
     ground_truth: dict mapping sound_id -> list of true indices, e.g. {655124: [0, 1, 2]}
     df: Pre-assembled master DataFrame containing 'sound_id' and 'search_query'
@@ -598,6 +609,7 @@ def evaluate_pipeline(ground_truth, meta_dir, df, output_csv="eval_results.csv",
             crest_factor_threshold=crest_factor_threshold, lat_threshold=lat_threshold,
             window_ms=window_ms, min_decay=min_decay, eps=eps, verbose=verbose,
             audio=audio, onset_times=onset_times, nn_extractor=nn_extractor,
+            feature_cache=feature_cache,
         )
 
         true_set = set(true_indices)
@@ -687,6 +699,8 @@ def run_pipeline_grid_search(ground_truth, meta_dir, df, output_dir, param_grid,
     for _, row in tqdm(df.iterrows(), total=len(df), desc="Extracting audio & onsets cache"):
         audio_cache[row["sound_id"]] = load_and_detect_onsets(row["local_path"])
 
+    feature_cache = {}
+
     print(f"Starting Grid Search. Total configurations to evaluate: {len(combinations)}")
     summary_log = []
 
@@ -705,6 +719,7 @@ def run_pipeline_grid_search(ground_truth, meta_dir, df, output_dir, param_grid,
             verbose=False,
             audio_cache=audio_cache,
             nn_extractor=nn_extractor,
+            feature_cache=feature_cache,
             **params
         )
 
