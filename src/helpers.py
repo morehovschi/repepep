@@ -347,7 +347,8 @@ def plot_waveform_with_onsets(
     plt.show()
 
 def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=16000, verbose=True,
-                           crest_factor_threshold=5.0, window_ms=200, lat_threshold=0.15, min_decay=0.0, eps=0.15):
+                           crest_factor_threshold=5.0, window_ms=200, lat_threshold=0.15, min_decay=0.0, eps=0.15,
+                           nn_extractor=None):
     """
     Analyzes pre-loaded low-res audio and pre-detected high-res onsets.
     Uses 'sr' (default 16000) to map time locations to low-res sample indices.
@@ -402,15 +403,28 @@ def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=16000,
         except:
             decay = 0.0
 
-        segment_mfccs = []
-        for frame in es.FrameGenerator(segment, frameSize=1024, hopSize=512, startFromZero=True):
-            _, mfcc_coeffs = _MFCC(_SPECTRUM(_WINDOWING(frame)))
-            segment_mfccs.append(mfcc_coeffs[1:])
+        if nn_extractor is None:
+            segment_mfccs = []
+            for frame in es.FrameGenerator(segment, frameSize=1024, hopSize=512, startFromZero=True):
+                _, mfcc_coeffs = _MFCC(_WINDOWING(_SPECTRUM(frame)))
+                segment_mfccs.append(mfcc_coeffs[1:]) # Drop 0th coefficient
 
-        if not segment_mfccs:
-            continue
+            if not segment_mfccs:
+                continue
+            # Classical representation: Average MFCC frame profile
+            feature_vector = np.mean(segment_mfccs, axis=0)
 
-        mean_mfcc = np.mean(segment_mfccs, axis=0)
+        else:
+            # Pad segment to exactly 1 second (16000 samples) to satisfy VGGish's receptive field
+            required_samples = sr  # 16000 samples for a 16kHz model
+            if len(segment) < required_samples:
+                padded_segment = np.pad(segment, (0, required_samples - len(segment)), mode='constant')
+            else:
+                padded_segment = segment[:required_samples]
+
+            # Neural representation: Extract the 128-D vector natively via Essentia
+            # (Ensuring it returns a flat 1D array)
+            feature_vector = nn_extractor(padded_segment).flatten()
 
         features.append({
             'orig_idx': orig_idx,
@@ -418,7 +432,7 @@ def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=16000,
             'lat': lat,
             'decay': decay,
             'crest': crest_factor,
-            'mfcc': mean_mfcc,
+            'feature': feature_vector,
             'window_ms_used': curr_window_ms  # Tracked for debugging/analysis
         })
 
@@ -434,7 +448,7 @@ def analyze_repetitiveness(audio, onset_times, filename="Audio Array", sr=16000,
         print_func("Not enough percussive/decaying events to cluster.\n")
         return None
 
-    X_mfcc = np.vstack(percussive_df['mfcc'].values)
+    X_mfcc = np.vstack(percussive_df['feature'].values)
     dist_matrix = pairwise_distances(X_mfcc, metric='cosine')
 
     clusterer = DBSCAN(eps=eps, min_samples=3, metric='precomputed')
@@ -456,7 +470,7 @@ def inspect_sound_with_repetition(meta_dir, sound_id,  metadata_df=None,
                                   crest_factor_threshold=5.0,
                                   lat_threshold=0.15, window_ms=200,
                                   min_decay=0.0, eps=0.15, audio=None,
-                                  onset_times=None):
+                                  onset_times=None, nn_extractor=None):
     """
     Wrapper function updated to accept a pre-loaded metadata DataFrame for efficiency,
     and an option to disable plotting during batch evaluation.
@@ -499,6 +513,7 @@ def inspect_sound_with_repetition(meta_dir, sound_id,  metadata_df=None,
             eps=eps,
             verbose=verbose,
             sr=16_000,
+            nn_extractor=nn_extractor,
         )
 
         rep_times = []
@@ -555,7 +570,7 @@ def inspect_sound_with_repetition(meta_dir, sound_id,  metadata_df=None,
 
 def evaluate_pipeline(ground_truth, meta_dir, df, output_csv="eval_results.csv", show_plot=True,
                       verbose=True, crest_factor_threshold=5.0, lat_threshold=0.15, window_ms=125,
-                      min_decay=0.0, eps=0.15, audio_cache=None):
+                      min_decay=0.0, eps=0.15, audio_cache=None, nn_extractor=None):
     """
     ground_truth: dict mapping sound_id -> list of true indices, e.g. {655124: [0, 1, 2]}
     df: Pre-assembled master DataFrame containing 'sound_id' and 'search_query'
@@ -582,7 +597,7 @@ def evaluate_pipeline(ground_truth, meta_dir, df, output_csv="eval_results.csv",
             meta_dir, int(sound_id), metadata_df=df, show_plot=show_plot,
             crest_factor_threshold=crest_factor_threshold, lat_threshold=lat_threshold,
             window_ms=window_ms, min_decay=min_decay, eps=eps, verbose=verbose,
-            audio=audio, onset_times=onset_times,
+            audio=audio, onset_times=onset_times, nn_extractor=nn_extractor,
         )
 
         true_set = set(true_indices)
@@ -657,7 +672,7 @@ def evaluate_pipeline(ground_truth, meta_dir, df, output_csv="eval_results.csv",
     results_df.to_csv(output_csv, index=False)
     print_func(f"\nSaved detailed two-tier evaluation to '{output_csv}'")
 
-def run_pipeline_grid_search(ground_truth, meta_dir, df, output_dir, param_grid):
+def run_pipeline_grid_search(ground_truth, meta_dir, df, output_dir, param_grid, nn_extractor=None):
     """
     Executes a grid search across multiple parameter combinations for the audio pipeline.
     Saves individual run details and a master summary sheet tracking both evaluation tiers.
@@ -689,6 +704,7 @@ def run_pipeline_grid_search(ground_truth, meta_dir, df, output_dir, param_grid)
             show_plot=False,
             verbose=False,
             audio_cache=audio_cache,
+            nn_extractor=nn_extractor,
             **params
         )
 

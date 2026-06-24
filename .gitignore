@@ -5,6 +5,7 @@ garbage
 .DS_Store
 .ipynb_checkpoints
 data/audio
+data/models
 *__pycache__
 readings
 backup/
