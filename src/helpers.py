@@ -247,7 +247,8 @@ def plot_waveform_with_onsets(
     start_time=None,
     end_time=None,
     max_annotations=20,
-    show_spectrogram=True
+    show_spectrogram=True,
+    title=None,
 ):
     # Convert times to sample indices
     start_sample = int(start_time * sample_rate) if start_time is not None else 0
@@ -276,7 +277,7 @@ def plot_waveform_with_onsets(
         offset_spec = transforms.offset_copy(ax_spec.transData, fig=fig, x=5, y=0, units='points')
     else:
         # Create a single, much shorter plot space to prevent scrolling fatigue
-        fig, ax_wave = plt.subplots(1, 1, figsize=(14, 3))
+        fig, ax_wave = plt.subplots(1, 1, figsize=(11, 3))
 
     offset_wave = transforms.offset_copy(ax_wave.transData, fig=fig, x=5, y=0, units='points')
 
@@ -306,7 +307,7 @@ def plot_waveform_with_onsets(
             )
 
     ax_wave.set_ylabel("Amplitude")
-    ax_wave.set_title("Waveform with Indexed Onsets")
+    ax_wave.set_title(title or "Waveform with indexed onsets")
     ax_wave.set_ylim(-y_text_pos_wave * 1.1, y_text_pos_wave * 1.25)
 
     # If the spectrogram is hidden, the waveform needs its own X-axis label
@@ -315,7 +316,7 @@ def plot_waveform_with_onsets(
 
     # ---- Spectrogram Subplot (Optional) ----
     if show_spectrogram:
-        ax_wave.set_title("Waveform and Spectrogram with Indexed Onsets")
+        ax_wave.set_title(title or "Waveform and Spectrogram with Indexed Onsets")
         Pxx, freqs, bins, im = ax_spec.specgram(
             audio_seg, NFFT=1024, Fs=sample_rate, noverlap=512, scale="dB", cmap="magma"
         )
