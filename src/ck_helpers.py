@@ -203,7 +203,7 @@ def analyze_recording_onsets_ck(file_path, window_ms=125, target_sr=44100):
             ck_matrix[i, j] = dist
             ck_matrix[j, i] = dist  # Symmetric fill
                 
-    return ck_matrix, valid_onset_times
+    return ck_matrix, valid_onset_times, onset_spectrograms
 
 def evaluate_matrix_contrast(matrix, group_indices):
     """

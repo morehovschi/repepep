@@ -6,6 +6,7 @@ garbage
 .ipynb_checkpoints
 data/audio
 data/models
+data/xc
 *__pycache__
 readings
 backup/
