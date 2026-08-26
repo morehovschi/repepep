@@ -16,6 +16,8 @@ from datetime import datetime
 
 from helpers import load_and_detect_onsets
 
+_OVERHEAD = {}
+
 def load_audio_as_spectrogram_essentia(file_path):
     """
     Loads an audio file and computes its log-magnitude spectrogram using Essentia.
@@ -46,7 +48,7 @@ def load_audio_as_spectrogram_essentia(file_path):
     
     return spectrogram_db
 
-def compute_ck1_distance(spec_x, spec_y, target_size=(256, 256), quality=5):
+def compute_ck1_distance(spec_x, spec_y, target_size=(256,128), quality=25, subtract_overhead=False):
     """
     Computes the Campana-Keogh (CK-1) distance between two 2D spectrogram arrays.
     
@@ -65,6 +67,8 @@ def compute_ck1_distance(spec_x, spec_y, target_size=(256, 256), quality=5):
     
     # 1. Helper function to normalize and resize spectrograms to grayscale frames
     def preprocess_spectrogram(spec):
+        spec = spec[:128]
+
         # Normalize strictly to 0-255 grayscale range
         s_min, s_max = spec.min(), spec.max()
         if s_max > s_min:
@@ -76,11 +80,6 @@ def compute_ck1_distance(spec_x, spec_y, target_size=(256, 256), quality=5):
         img = Image.fromarray(spec_norm.astype(np.uint8))
         img_resized = img.resize(target_size, Image.Resampling.BILINEAR)
         return np.array(img_resized)
-
-    # Preprocess both inputs
-    x = preprocess_spectrogram(spec_x)
-    y = preprocess_spectrogram(spec_y)
-    width, height = target_size
 
     # 2. Helper function to pass 2 frames to FFmpeg and get the compressed size in bytes
     def get_mpeg1_compressed_size(frame_1, frame_2):
@@ -98,6 +97,9 @@ def compute_ck1_distance(spec_x, spec_y, target_size=(256, 256), quality=5):
             '-vcodec', 'mpeg1video',       # Force legacy MPEG-1 as per the original spec
             '-bf', '0',                    # Disable B-frames (forces frame 2 to be a P-frame)
             '-g', '10',                    # Prevent forcing frame 2 into a new GOP/I-frame
+            '-sc_threshold', '1000000000',
+            '-me_method', 'esa',
+            '-me_range', '16',
             '-q:v', str(quality),          # CRITICAL: Use constant quality scale instead of fixed bitrate
             '-f', 'mpeg1video',            # Raw video stream container (minimal overhead)
             'pipe:1'                       # Output to stdout pipe
@@ -110,7 +112,23 @@ def compute_ck1_distance(spec_x, spec_y, target_size=(256, 256), quality=5):
         
         # Stream frames into stdin and grab output bitstream from stdout
         stdout, _ = process.communicate(input=f1_bytes + f2_bytes)
+        if process.returncode !=0 or len(stdout) == 0:
+            raise RuntimeError(f"ffmpeg failed (rc={process.returncode})")
         return len(stdout)
+
+    def stream_overhead(target_size, quality):
+        key = (target_size, quality)
+        if key not in _OVERHEAD:
+            w, h = target_size
+            flat = np.full((h, w), 128, dtype=np.uint8)
+            _OVERHEAD[key] = get_mpeg1_compressed_size(flat, flat)
+        return _OVERHEAD[key]
+
+    # Preprocess both inputs
+    x = preprocess_spectrogram(spec_x)
+    y = preprocess_spectrogram(spec_y)
+    width, height = target_size
+
 
     # 3. Compute the four compression elements required by the formula
     c_x_given_y = get_mpeg1_compressed_size(y, x)  # y is I-frame, x is P-frame
@@ -119,10 +137,11 @@ def compute_ck1_distance(spec_x, spec_y, target_size=(256, 256), quality=5):
     c_y_given_y = get_mpeg1_compressed_size(y, y)  # Identity baseline y
 
     # 4. Final CK-1 Metric calculation
-    numerator = c_x_given_y + c_y_given_x
-    denominator = c_x_given_x + c_y_given_y
-    
+    H = stream_overhead(target_size, quality) if subtract_overhead else 0
+    numerator   = (c_x_given_y - H) + (c_y_given_x - H)
+    denominator = (c_x_given_x - H) + (c_y_given_y - H)
     ck1_distance = (numerator / denominator) - 1.0
+
     return max(0.0, ck1_distance) # Clamp near zero minor float variations
 
 def compute_spectrogram_from_chunk(audio_segment):
@@ -135,7 +154,7 @@ def compute_spectrogram_from_chunk(audio_segment):
     
     spec_list = []
     # FrameSize=512, HopSize=64 gives massive temporal resolution
-    for frame in es.FrameGenerator(audio_segment, frameSize=512, hopSize=64):
+    for frame in es.FrameGenerator(audio_segment, frameSize=512, hopSize=21):
         windowed_frame = windowing(frame)
         frame_spectrum = spectrum(windowed_frame)
         spec_list.append(frame_spectrum)
@@ -151,7 +170,8 @@ def compute_spectrogram_from_chunk(audio_segment):
     
     return spectrogram_db
 
-def analyze_recording_onsets_ck(file_path, window_ms=125, target_sr=44100):
+def analyze_recording_onsets_ck(file_path, window_ms=125, target_sr=44100, quality=5,
+                                subtract_overhead=False):
     """
     Loads high-res audio, uses the filtered high-res timestamps from the helper,
     extracts a fixed window after each onset, and computes the pairwise CK matrix.
@@ -198,8 +218,8 @@ def analyze_recording_onsets_ck(file_path, window_ms=125, target_sr=44100):
     
     for i in range(num_onsets):
         for j in range(i, num_onsets):
-
-            dist = compute_ck1_distance(onset_spectrograms[i], onset_spectrograms[j])
+            dist = compute_ck1_distance(onset_spectrograms[i], onset_spectrograms[j],
+                                        quality=quality, subtract_overhead=subtract_overhead)
             ck_matrix[i, j] = dist
             ck_matrix[j, i] = dist  # Symmetric fill
                 

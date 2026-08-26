@@ -98,7 +98,6 @@ def pairwise_auc(matrix, labels, origin=None):
     r_pos = ranks[same].sum()
     return (r_pos - n_pos * (n_pos + 1) / 2.0) / (n_pos * n_neg)
 
-
 def mean_average_precision(matrix, labels):
     """MAP over every onset belonging to a group of size >= 2."""
     n = matrix.shape[0]
