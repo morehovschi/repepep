@@ -48,7 +48,7 @@ def load_audio_as_spectrogram_essentia(file_path):
     
     return spectrogram_db
 
-def compute_ck1_distance(spec_x, spec_y, target_size=(256,128), quality=25, subtract_overhead=False):
+def compute_ck1_distance(spec_x, spec_y, target_size=(80,128), quality=25, subtract_overhead=False):
     """
     Computes the Campana-Keogh (CK-1) distance between two 2D spectrogram arrays.
     
@@ -154,7 +154,7 @@ def compute_spectrogram_from_chunk(audio_segment):
     
     spec_list = []
     # FrameSize=512, HopSize=64 gives massive temporal resolution
-    for frame in es.FrameGenerator(audio_segment, frameSize=512, hopSize=21):
+    for frame in es.FrameGenerator(audio_segment, frameSize=512, hopSize=64):
         windowed_frame = windowing(frame)
         frame_spectrum = spectrum(windowed_frame)
         spec_list.append(frame_spectrum)
