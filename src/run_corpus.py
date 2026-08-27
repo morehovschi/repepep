@@ -51,6 +51,7 @@ CONFIG = {
     "sr": 44100,
     "log_freq": False,
     "hop_size": 64,
+    "fmin": 50,
 }
 
 # --------------------------------------------------------------------------
@@ -78,7 +79,8 @@ def extract_specs(fpath, config=CONFIG):
             hop_size=config["hop_size"],
             n_bands=config["target_size"][1],
             log_freq=config["log_freq"],
-            sr=config["sr"])
+            sr=config["sr"],
+            fmin=config["fmin"])
 
         if s is not None:
             specs.append(s)
