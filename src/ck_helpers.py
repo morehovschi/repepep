@@ -11,8 +11,10 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import essentia.standard as es
 import numpy as np
+
 from PIL import Image
 from datetime import datetime
+from scipy.interpolate import interp1d
 
 from helpers import load_and_detect_onsets
 
@@ -67,7 +69,7 @@ def compute_ck1_distance(spec_x, spec_y, target_size=(80,128), quality=25, subtr
     
     # 1. Helper function to normalize and resize spectrograms to grayscale frames
     def preprocess_spectrogram(spec):
-        spec = spec[:128]
+        spec = spec[:target_size[1]]
 
         # Normalize strictly to 0-255 grayscale range
         s_min, s_max = spec.min(), spec.max()
@@ -144,34 +146,35 @@ def compute_ck1_distance(spec_x, spec_y, target_size=(80,128), quality=25, subtr
 
     return max(0.0, ck1_distance) # Clamp near zero minor float variations
 
-def compute_spectrogram_from_chunk(audio_segment):
-    """
-    Computes a high-density log-magnitude spectrogram optimized for short audio windows.
-    """
-    # 1. Use smaller frame/hop sizes to maximize native resolution in short windows
+def compute_spectrogram_from_chunk(audio_segment, hop_size=64, n_bands=128,
+                                   log_freq=False, fmin=50, fmax=11000,
+                                   sr=44100):
     windowing = es.Windowing(type='hann')
-    spectrum = es.Spectrum()
-    
+    spectrum  = es.Spectrum()
+
     spec_list = []
-    # FrameSize=512, HopSize=64 gives massive temporal resolution
-    for frame in es.FrameGenerator(audio_segment, frameSize=512, hopSize=64):
-        windowed_frame = windowing(frame)
-        frame_spectrum = spectrum(windowed_frame)
-        spec_list.append(frame_spectrum)
-        
+    for frame in es.FrameGenerator(audio_segment, frameSize=512, hopSize=hop_size):
+        spec_list.append(spectrum(windowing(frame)))
     if not spec_list:
         return None
 
-    # Transpose to: (Frequency Bins x Time Frames) -> Natively ~257 x 165
-    spectrogram = np.array(spec_list).T
-    
-    # Convert to Decibel scale
-    spectrogram_db = 20 * np.log10(np.maximum(spectrogram, 1e-5))
-    
-    return spectrogram_db
+    spec_db = 20 * np.log10(np.maximum(np.array(spec_list).T, 1e-5))
 
-def analyze_recording_onsets_ck(file_path, window_ms=125, target_sr=44100, quality=5,
-                                subtract_overhead=False):
+    if log_freq:
+        # Resample the linear frequency axis onto a log-spaced grid.
+        # Equivalent to plotting the spectrogram with a log y-axis, and free
+        # of the triangular-band width constraint that MelBands imposes.
+        bin_freqs = np.linspace(0, sr / 2, spec_db.shape[0])
+        targets = np.geomspace(fmin, fmax, n_bands)
+        f = interp1d(bin_freqs, spec_db, axis=0, kind='linear',
+                     bounds_error=False,
+                     fill_value=(spec_db[0], spec_db[-1]))
+        spec_db = f(targets)
+
+    return spec_db
+
+def analyze_recording_onsets_ck(file_path, window_ms=125, target_sr=44100, quality=25,
+                                subtract_overhead=False, log_freq=False):
     """
     Loads high-res audio, uses the filtered high-res timestamps from the helper,
     extracts a fixed window after each onset, and computes the pairwise CK matrix.
@@ -204,7 +207,8 @@ def analyze_recording_onsets_ck(file_path, window_ms=125, target_sr=44100, quali
             continue
             
         segment = audio_high[start_idx:end_idx]
-        spec = compute_spectrogram_from_chunk(segment)
+        spec = compute_spectrogram_from_chunk(segment, log_freq=log_freq,
+                                              sr=target_sr)
         
         if spec is not None:
             onset_spectrograms.append(spec)

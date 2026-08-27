@@ -109,6 +109,11 @@ def evaluate_corpus(items, verbose=True):
         all_d.append(d)
         all_same.append(same)
 
+    if not all_d:
+        return {"rows": [], "summary": {k: float("nan") for k in
+                ("mean_auc","pooled_auc","calibration_gap","mean_cohens_d",
+                 "mean_best_f1","threshold_mean","threshold_sd","threshold_cv")}}
+
     all_d = np.concatenate(all_d)
     all_same = np.concatenate(all_same)
 

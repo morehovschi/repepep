@@ -49,8 +49,9 @@ CONFIG = {
     "subtract_overhead": False,
     "crop": 128,
     "sr": 44100,
+    "log_freq": False,
+    "hop_size": 64,
 }
-
 
 # --------------------------------------------------------------------------
 # extraction and matrix building
@@ -72,7 +73,13 @@ def extract_specs(fpath, config=CONFIG):
         a = int(t * config["sr"])
         if a + win > len(audio):
             continue
-        s = compute_spectrogram_from_chunk(audio[a:a + win])
+        s = compute_spectrogram_from_chunk(
+            audio[a:a + win],
+            hop_size=config["hop_size"],
+            n_bands=config["target_size"][1],
+            log_freq=config["log_freq"],
+            sr=config["sr"])
+
         if s is not None:
             specs.append(s)
             times.append(t)
@@ -170,14 +177,16 @@ def report_all(results, split_at=10, verbose=True):
               f"{s['calibration_gap']:>+8.3f}{s['mean_best_f1']:>8.2f}"
               f"{s['threshold_cv']:>8.2f}{s['mean_cohens_d']:>7.2f}")
 
-    print(f"\n{'=' * 70}\nTUNE (first {split_at}) vs HOLDOUT (rest)\n{'=' * 70}")
-    print(f"{'method':<12}{'tune_AUC':>10}{'hold_AUC':>10}"
-          f"{'tune_pool':>11}{'hold_pool':>11}")
-    for mname, items in results.items():
-        t = evaluate_corpus(items[:split_at], verbose=False)["summary"]
-        h = evaluate_corpus(items[split_at:], verbose=False)["summary"]
-        print(f"{mname:<12}{t['mean_auc']:>10.3f}{h['mean_auc']:>10.3f}"
-              f"{t['pooled_auc']:>11.3f}{h['pooled_auc']:>11.3f}")
+    n_items = len(next(iter(results.values())))
+    if split_at is not None and 0 < split_at < n_items:
+        print(f"\n{'=' * 70}\nTUNE (first {split_at}) vs HOLDOUT (rest)\n{'=' * 70}")
+        print(f"{'method':<12}{'tune_AUC':>10}{'hold_AUC':>10}"
+              f"{'tune_pool':>11}{'hold_pool':>11}")
+        for mname, items in results.items():
+            t = evaluate_corpus(items[:split_at], verbose=False)["summary"]
+            h = evaluate_corpus(items[split_at:], verbose=False)["summary"]
+            print(f"{mname:<12}{t['mean_auc']:>10.3f}{h['mean_auc']:>10.3f}"
+                  f"{t['pooled_auc']:>11.3f}{h['pooled_auc']:>11.3f}")
 
     return summaries
 
