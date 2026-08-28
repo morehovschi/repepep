@@ -50,7 +50,8 @@ def load_audio_as_spectrogram_essentia(file_path):
     
     return spectrogram_db
 
-def compute_ck1_distance(spec_x, spec_y, target_size=(80,128), quality=25, subtract_overhead=False):
+def compute_ck1_distance(spec_x, spec_y, target_size=(80,128), quality=25,
+                         subtract_overhead=False, norm_range=None):
     """
     Computes the Campana-Keogh (CK-1) distance between two 2D spectrogram arrays.
     
@@ -70,15 +71,13 @@ def compute_ck1_distance(spec_x, spec_y, target_size=(80,128), quality=25, subtr
     # 1. Helper function to normalize and resize spectrograms to grayscale frames
     def preprocess_spectrogram(spec):
         spec = spec[:target_size[1]]
-
-        # Normalize strictly to 0-255 grayscale range
-        s_min, s_max = spec.min(), spec.max()
+        s_min, s_max = norm_range if norm_range else (spec.min(), spec.max())
+        spec = np.clip(spec, s_min, s_max)
         if s_max > s_min:
             spec_norm = 255.0 * (spec - s_min) / (s_max - s_min)
         else:
             spec_norm = np.zeros_like(spec)
-            
-        # Resize to standard uniform dimensions using Pillow
+
         img = Image.fromarray(spec_norm.astype(np.uint8))
         img_resized = img.resize(target_size, Image.Resampling.BILINEAR)
         return np.array(img_resized)

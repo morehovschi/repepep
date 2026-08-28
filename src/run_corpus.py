@@ -52,6 +52,8 @@ CONFIG = {
     "log_freq": False,
     "hop_size": 64,
     "fmin": 50,
+    "norm": "per_image",      # or "per_file"
+    "dyn_range_db": 60,
 }
 
 # --------------------------------------------------------------------------
@@ -101,18 +103,18 @@ def _cropped(dist_fn, crop):
     """Give a baseline the same cropped input CK receives."""
     return lambda a, b: dist_fn(a[:crop], b[:crop])
 
-
-def make_methods(config):
+def make_methods(config, norm_range=None):
+    crop = config["target_size"][1]
     return {
         "CK": lambda a, b: compute_ck1_distance(
             a, b,
             target_size=config["target_size"],
             quality=config["quality"],
-            subtract_overhead=config["subtract_overhead"]),
-        "euclidean": _cropped(dumb_euclidean, config["crop"]),
-        "energy": _cropped(dumb_energy, config["crop"]),
+            subtract_overhead=config["subtract_overhead"],
+            norm_range=norm_range),
+        "euclidean": lambda a, b: dumb_euclidean(a[:crop], b[:crop]),
+        "energy":    lambda a, b: dumb_energy(a[:crop], b[:crop]),
     }
-
 
 def run_corpus(fpath_annotations, config=CONFIG, methods=None, verbose=True):
     """
@@ -122,8 +124,7 @@ def run_corpus(fpath_annotations, config=CONFIG, methods=None, verbose=True):
     Iteration order follows fpath_annotations, so the tune/holdout split stays
     consistent across runs as long as that dict is not rebuilt.
     """
-    methods = methods or make_methods(config)
-    out = {k: [] for k in methods}
+    out = {k: [] for k in (methods or make_methods(config))}
     t0 = time.time()
 
     for idx, (rec_id, (fpath, targets)) in enumerate(fpath_annotations.items(), 1):
@@ -134,9 +135,6 @@ def run_corpus(fpath_annotations, config=CONFIG, methods=None, verbose=True):
         specs, _ = extract_specs(fpath, config)
         n = len(specs)
 
-        # Target indices point into the detected-onset list. extract_specs
-        # drops onsets whose window runs past the end of the buffer, so an
-        # index at or beyond n would silently label nothing.
         kept = [t for t in targets if t < n]
         if len(kept) < len(targets):
             print(f"    WARNING: targets {sorted(set(targets) - set(kept))} "
@@ -145,7 +143,19 @@ def run_corpus(fpath_annotations, config=CONFIG, methods=None, verbose=True):
             print(f"    SKIP: fewer than 2 target onsets survive")
             continue
 
-        for mname, fn in methods.items():
+        # Normalisation range is a property of the RECORDING, so the distance
+        # functions have to be rebuilt per file. Fixed dB window below the
+        # file peak, not raw min/max: one loud transient would otherwise set
+        # the ceiling for every segment and squash everything else.
+        if config.get("norm") == "per_file":
+            hi = max(s[:config["target_size"][1]].max() for s in specs)
+            norm_range = (hi - config.get("dyn_range_db", 60), hi)
+        else:
+            norm_range = None
+
+        fns = methods or make_methods(config, norm_range)
+
+        for mname, fn in fns.items():
             out[mname].append((name, build_matrix(specs, fn), [kept]))
 
     if verbose:
