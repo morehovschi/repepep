@@ -145,9 +145,27 @@ def compute_ck1_distance(spec_x, spec_y, target_size=(80,128), quality=25,
 
     return max(0.0, ck1_distance) # Clamp near zero minor float variations
 
+def estimate_noise_profile(audio, percentile=20.0):
+    """
+    Per-bin noise floor for one recording: the Nth percentile magnitude
+    across every frame of the whole file.
+
+    A percentile rather than the mean, so the loud events themselves do not
+    inflate the profile that is meant to be subtracted from them. Uses the
+    same frameSize as compute_spectrogram_from_chunk so the 257-bin profile
+    lines up with the spectrogram rows.
+    """
+    windowing, spectrum = es.Windowing(type='hann'), es.Spectrum()
+    mags = [spectrum(windowing(f))
+            for f in es.FrameGenerator(audio, frameSize=512, hopSize=256)]
+    if not mags:
+        return None
+    return np.percentile(np.array(mags), percentile, axis=0)
+
 def compute_spectrogram_from_chunk(audio_segment, hop_size=64, n_bands=128,
                                    log_freq=False, fmin=50, fmax=11000,
-                                   sr=44100):
+                                   sr=44100, noise_profile=None,
+                                   alpha=1.5, beta=0.02):
     windowing = es.Windowing(type='hann')
     spectrum  = es.Spectrum()
 
@@ -157,12 +175,18 @@ def compute_spectrogram_from_chunk(audio_segment, hop_size=64, n_bands=128,
     if not spec_list:
         return None
 
-    spec_db = 20 * np.log10(np.maximum(np.array(spec_list).T, 1e-5))
+    mags = np.array(spec_list).T
+
+    if noise_profile is not None:
+        # Spectral subtraction with a floor. The floor matters: hard-clipping
+        # at zero produces musical noise -- isolated time-frequency spikes
+        # where the subtraction overshoots -- and those are exactly the
+        # unmatchable high-entropy artifacts CK punishes hardest.
+        mags = np.maximum(mags - alpha * noise_profile[:, None], beta * mags)
+
+    spec_db = 20 * np.log10(np.maximum(mags, 1e-5))
 
     if log_freq:
-        # Resample the linear frequency axis onto a log-spaced grid.
-        # Equivalent to plotting the spectrogram with a log y-axis, and free
-        # of the triangular-band width constraint that MelBands imposes.
         bin_freqs = np.linspace(0, sr / 2, spec_db.shape[0])
         targets = np.geomspace(fmin, fmax, n_bands)
         f = interp1d(bin_freqs, spec_db, axis=0, kind='linear',
@@ -185,8 +209,8 @@ def analyze_recording_onsets_ck(file_path, window_ms=125, target_sr=44100, quali
     # 2. Load the actual high-res audio buffer for high-fidelity spectrograms
     audio_high = es.MonoLoader(filename=file_path, sampleRate=target_sr)()
     
-    print(f"Processing: {os.path.basename(file_path)}")
-    print(f"Filtered Onsets to process: {len(onset_times)}")
+    # print(f"Processing: {os.path.basename(file_path)}")
+    # print(f"Filtered Onsets to process: {len(onset_times)}")
     
     if len(onset_times) < 2:
         print("Not enough onsets to perform pairwise comparison.")

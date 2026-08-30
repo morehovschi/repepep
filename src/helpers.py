@@ -270,14 +270,14 @@ def plot_waveform_with_onsets(
     if show_spectrogram:
         fig, (ax_wave, ax_spec) = plt.subplots(
             2, 1,
-            figsize=(14, 8),
+            figsize=(10, 6),
             sharex=True,
-            gridspec_kw={"height_ratios": [2, 1]}
+            gridspec_kw={"height_ratios": [3, 2]}
         )
         offset_spec = transforms.offset_copy(ax_spec.transData, fig=fig, x=5, y=0, units='points')
     else:
         # Create a single, much shorter plot space to prevent scrolling fatigue
-        fig, ax_wave = plt.subplots(1, 1, figsize=(11, 3))
+        fig, ax_wave = plt.subplots(1, 1, figsize=(8, 4))
 
     offset_wave = transforms.offset_copy(ax_wave.transData, fig=fig, x=5, y=0, units='points')
 
@@ -291,14 +291,20 @@ def plot_waveform_with_onsets(
         t = item['rel_time']
         idx = item['orig_idx']
 
-        ax_wave.axvline(t, color="red", linestyle="--", alpha=0.7, linewidth=1.2)
+        item_color = "red"
+        # if idx in [ 5, 10, 11, 12]:
+        #     item_color = "red"
+        # elif idx in [11, 12, 14, 15]:
+        #     item_color = "blue"
+
+        ax_wave.axvline(t, color=item_color, linestyle="--", alpha=0.7, linewidth=1.2)
 
         if should_annotate:
             ax_wave.text(
                 x=t,
                 y=y_text_pos_wave,
                 s=str(idx),
-                color="red",
+                color=item_color,
                 fontsize=9,
                 fontweight='bold',
                 horizontalalignment='left',

@@ -34,7 +34,11 @@ import numpy as np
 import essentia.standard as es
 
 from helpers import load_and_detect_onsets
-from ck_helpers import compute_ck1_distance, compute_spectrogram_from_chunk
+from ck_helpers import (
+    compute_ck1_distance,
+    compute_spectrogram_from_chunk,
+    estimate_noise_profile
+)
 from baselines import dumb_energy, dumb_euclidean
 from ck_evaluate_corpus import evaluate_corpus
 
@@ -54,6 +58,9 @@ CONFIG = {
     "fmin": 50,
     "norm": "per_image",      # or "per_file"
     "dyn_range_db": 60,
+    "denoise": False,
+    "alpha": 1.5,
+    "beta": 0.02,
 }
 
 # --------------------------------------------------------------------------
@@ -61,15 +68,14 @@ CONFIG = {
 # --------------------------------------------------------------------------
 
 def extract_specs(fpath, config=CONFIG):
-    """
-    Onsets -> list of dB spectrograms, uncropped.
-
-    Cropping happens at distance time so the baselines can be given exactly
-    the same images CK sees.
-    """
     _, onset_times = load_and_detect_onsets(fpath)
     audio = es.MonoLoader(filename=fpath, sampleRate=config["sr"])()
     win = int(config["window_ms"] / 1000.0 * config["sr"])
+
+    # One profile per recording, from the full file -- not per window, which
+    # would let a loud event define its own noise floor.
+    noise_profile = (estimate_noise_profile(audio)
+                     if config.get("denoise") else None)
 
     specs, times = [], []
     for t in onset_times:
@@ -82,13 +88,14 @@ def extract_specs(fpath, config=CONFIG):
             n_bands=config["target_size"][1],
             log_freq=config["log_freq"],
             sr=config["sr"],
-            fmin=config["fmin"])
-
+            fmin=config["fmin"],
+            noise_profile=noise_profile,
+            alpha=config.get("alpha", 1.5),
+            beta=config.get("beta", 0.02))
         if s is not None:
             specs.append(s)
             times.append(t)
     return specs, times
-
 
 def build_matrix(specs, dist_fn):
     n = len(specs)
